@@ -2,7 +2,10 @@ import fs from 'fs';
 import { JSDOM } from 'jsdom';
 import axios from 'axios';
 import { setTimeout } from 'timers/promises';
-
+if (fs.existsSync('fit-scrape-search.json')) {
+  console.log('fit-scrape-search.json already exists, skipping scraping');
+  process.exit(0);
+}
 const games: { name: string, url: string }[] = [];
 for (let page = 0; page < 94; page++) {
   console.log(`Scraping page ${page}`);
