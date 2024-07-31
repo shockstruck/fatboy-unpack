@@ -1,0 +1,8 @@
+{
+  "author": "Nat3z",
+  "scripts": {
+    "preSetup": "bun install",
+    "setup": "bun run ./src/setup.ts",
+    "run": "bun run ./src/main.ts"
+  }
+}
