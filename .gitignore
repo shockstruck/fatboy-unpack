@@ -1,0 +1,4 @@
+fit-scrape-search.json
+node_modules/
+repack-data-scrapes/
+*.log
