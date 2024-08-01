@@ -2,3 +2,5 @@ fit-scrape-search.json
 node_modules/
 repack-data-scrapes/
 *.log
+steam-apps.json
+time-since-scrape.txt
