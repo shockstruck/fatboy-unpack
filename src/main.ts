@@ -1,11 +1,12 @@
-import OGIAddon, { SearchResult } from "ogi-addon";
+import OGIAddon, { ConfigurationBuilder, SearchResult } from "ogi-addon";
 import fs from "fs";
 import * as JsSearch from "js-search";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
-import { exec } from "child_process";
+import { exec, execSync, spawn } from "child_process";
 import { scrapeHer } from "./scraper";
+import { join } from "path";
 
 const addon = new OGIAddon({
   author: "Nat3z",
@@ -100,6 +101,7 @@ addon.on('search', ({ text, type }, event) => {
         name: game.name,
         downloadURL: game.magnetLink,
         filename: generateHash(game.name),
+        steamAppID: parseInt(text)
       }
     });
     event.resolve(searchResults);
@@ -108,16 +110,64 @@ addon.on('search', ({ text, type }, event) => {
   
 });
 
-addon.on('setup', ({ path, type, name, usedRealDebrid, multiPartFiles }, event) => {
+addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFiles }, event) => {
   event.defer();
   event.log("Setting up fitgirl game...");
   // get the path and open setup.exe
-  const setupPath = `${path}\\setup.exe`;
-  event.log(`Opening setup.exe`);
-  // exec(setupPath)
-  setTimeout(() => {
-    event.complete();
-  }, 2000);
+  new Promise<void>(async (resolve) => {
+    const screen = new ConfigurationBuilder()
+      .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process").setDefaultValue(true))
+      .addStringOption(option => option.setName("installDir").setDisplayName("Installation Directory").setDescription("The directory where the game will be installed").setInputType('folder'))
+
+    if (fs.existsSync(join(path, 'fg-optional-bonus-content.bin'))) {
+      screen.addBooleanOption(option => option.setName("addBonus").setDisplayName("Add Bonus Content").setDescription("Add the optional bonus content to the installation"))
+    }
+    const input = await event.askForInput("FitGirl Repacks", "Setup your FitGirl Repack", screen)
+
+    const setupPath = join(path, 'setup.exe');
+    const installDir = input.installDir as string;
+    const addBonus = input.addBonus as boolean ?? false;
+    const setupINF = makeSetupINF(installDir, addBonus);
+    if (input.automate) {
+      
+      fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
+      event.log(`Setup INI file created at ${path}\\fatboy-setup.inf`);
+      event.log(`Opening setup.exe with INI file`);
+      execSync(`${setupPath} /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+    }
+    else {
+      event.log(`Opening setup.exe`);
+      execSync(`${setupPath}`, { cwd: path });
+    }
+
+    const gameExecutable = await event.askForInput("FitGirl Repacks", "Help us help you.", new ConfigurationBuilder()
+      .addStringOption(option => option
+        .setName('workingDir')
+        .setDisplayName('Working Directory')
+        .setDescription('Go to the directory: ' + (installDir ?? ' (where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
+        .setInputType('folder')
+      )
+      .addStringOption(option => option
+        .setName("gameExecutable")
+        .setDisplayName("Game Executable")
+        .setDescription("Go to the directory: " + (installDir ?? ' (where you installed it)') + " and select the game executable.")
+        .setInputType('file')
+      )
+    )
+
+    // exec(setupPath)
+    event.resolve({
+      capsuleImage: `https://steamcdn-a.akamaihd.net/steam/apps/${steamAppID}/library_600x900_2x.jpg`,
+      cwd: gameExecutable.workingDir as string,
+      launchExecutable: gameExecutable.gameExecutable as string,
+      name: name,
+      steamAppID: steamAppID,
+      version: '1.0.0',
+      launchArguments: ''
+    })
+      resolve();
+  });
+
 })
 addon.on('connect', () => {
   addon.notify({
@@ -223,4 +273,15 @@ async function matchSteamAppID(title: string): Promise<string | undefined> {
     return undefined;
   }
   return getRealGame((steamAppId[0] as any).appid);
+}
+
+function makeSetupINF(installDir: string, addBonus: boolean) {
+  return `
+[Setup]
+Lang=en
+Dir=${installDir}
+SetupType=custom
+Components=text${addBonus ? ',bonus' : ''}
+Tasks=
+`
 }
