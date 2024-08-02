@@ -2,12 +2,16 @@ import fs from 'fs';
 import { JSDOM } from 'jsdom';
 import axios from 'axios';
 import { setTimeout } from 'timers/promises';
-export async function scrapeHer(scrapingInterval: number) {
+export async function shouldScrape(scrapingInterval: number): Promise<boolean> {
   const timeSinceScrape = fs.existsSync('time-since-scrape.txt') ? parseInt(fs.readFileSync('time-since-scrape.txt', 'utf-8')) : 0;
   if (Date.now() - timeSinceScrape < scrapingInterval) {
     console.log('Scrape is still valid, skipping scraping');
-    return;
+    return false;
   }
+  console.log('Scrape is invalid, scraping');
+  return true;
+}
+export async function scrapeHer() {
   const games: { name: string, url: string }[] = [];
   for (let page = 0; page < 94; page++) {
     console.log(`Scraping page ${page}`);

@@ -5,7 +5,7 @@ import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
 import { exec, execSync, spawn } from "child_process";
-import { scrapeHer } from "./scraper";
+import { scrapeHer, shouldScrape } from "./scraper";
 import { join } from "path";
 
 const addon = new OGIAddon({
@@ -46,10 +46,12 @@ async function getSteamApps(): Promise<{ appid: string, name: string }[]> {
 const scrapedGames: Game[] = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
 const steamApps: { appid: string, name: string }[] = await getSteamApps();
 const steamAppMatcher = new JsSearch.Search('appid');
+steamAppMatcher.indexStrategy = new JsSearch.ExactWordIndexStrategy();
 steamAppMatcher.addIndex('appid');
 steamAppMatcher.addDocuments(steamApps);
 
 const search = new JsSearch.Search('name');
+search.indexStrategy = new JsSearch.ExactWordIndexStrategy();
 search.addIndex('name');
 search.addDocuments(scrapedGames);
 
@@ -144,13 +146,13 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFile
       .addStringOption(option => option
         .setName('workingDir')
         .setDisplayName('Working Directory')
-        .setDescription('Go to the directory: ' + (installDir ?? ' (where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
+        .setDescription('Go to the directory: ' + (installDir ?? '(where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
         .setInputType('folder')
       )
       .addStringOption(option => option
         .setName("gameExecutable")
         .setDisplayName("Game Executable")
-        .setDescription("Go to the directory: " + (installDir ?? ' (where you installed it)') + " and select the game executable.")
+        .setDescription("Go to the directory: " + (installDir ?? '(where you installed it)') + " and select the game executable.")
         .setInputType('file')
       )
     )
@@ -165,7 +167,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFile
       version: '1.0.0',
       launchArguments: ''
     })
-      resolve();
+    resolve();
   });
 
 })
@@ -176,10 +178,21 @@ addon.on('connect', () => {
     type: 'info'
   });
   if (!fs.existsSync('fit-scrape-search.json')) {
-    scrapeHer(0);
+    scrapeHer();
     return;
   }
-  scrapeHer(7 * 86400000);
+  new Promise<void>(async (resolve) => {
+    if (await shouldScrape(7 * 86400000)) {
+      scrapeHer();
+      addon.notify({
+        message: 'Scrapes are invalid, scraping FitGirl...',
+        id: 'fatboy-unpack-scraping',
+        type: 'info'
+      });
+    }
+    resolve();
+  });
+  
 });
 
 function generateHash(str: string) {
