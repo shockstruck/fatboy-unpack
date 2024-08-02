@@ -43,7 +43,9 @@ async function getSteamApps(): Promise<{ appid: string, name: string }[]> {
   return steamApps
 }
 
-const scrapedGames: Game[] = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+
+let scrapedGames: Game[] | undefined = undefined;
+
 const steamApps: { appid: string, name: string }[] = await getSteamApps();
 const steamAppMatcher = new JsSearch.Search('appid');
 steamAppMatcher.indexStrategy = new JsSearch.ExactWordIndexStrategy();
@@ -53,11 +55,20 @@ steamAppMatcher.addDocuments(steamApps);
 const search = new JsSearch.Search('name');
 search.indexStrategy = new JsSearch.ExactWordIndexStrategy();
 search.addIndex('name');
-search.addDocuments(scrapedGames);
 
 addon.on('configure', (config) => config)
 
 addon.on('search', ({ text, type }, event) => {
+  if (scrapedGames === undefined) {
+    event.defer();
+    addon.notify({
+      message: 'There are no scraped games available. We are currently scraping FitGirl Repacks.',
+      id: 'fatboy-unpack-scraping',
+      type: 'info'
+    });
+    event.resolve([]);
+    return;
+  }
   event.defer();
   if (type !== 'steamapp') {
     event.resolve([]);
@@ -172,14 +183,18 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFile
 
 })
 addon.on('connect', () => {
-  addon.notify({
-    message: 'FatBoy Unpack Ready',
-    id: 'fatboy-unpack-connected',
-    type: 'info'
-  });
+  
   if (!fs.existsSync('fit-scrape-search.json')) {
     scrapeHer();
     return;
+  } else {
+    scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+    search.addDocuments(scrapedGames!!);
+    addon.notify({
+      message: 'FatBoy Unpack Ready',
+      id: 'fatboy-unpack-connected',
+      type: 'info'
+    });
   }
   new Promise<void>(async (resolve) => {
     if (await shouldScrape(7 * 86400000)) {

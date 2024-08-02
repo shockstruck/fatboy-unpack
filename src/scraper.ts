@@ -11,6 +11,20 @@ export async function shouldScrape(scrapingInterval: number): Promise<boolean> {
   console.log('Scrape is invalid, scraping');
   return true;
 }
+
+function replaceFancyASCII(text: string) {
+  return text
+    .replace(/[‘’‛′`]/g, "'")    // Replace fancy apostrophes
+    .replace(/[“”„″]/g, '"')    // Replace fancy quotes
+    .replace(/[‐‑‒–—―]/g, '-')  // Replace fancy dashes
+    .replace(/[•‣∙]/g, '*')     // Replace fancy bullets
+    .replace(/[…]/g, '...')     // Replace ellipsis
+    .replace(/[‖]/g, '||')      // Replace double vertical line
+    .replace(/[‗]/g, '_')       // Replace double underscore
+    .replace(/[⁄∕]/g, '/')      // Replace fancy slashes
+    .replace(/[†‡]/g, '+')      // Replace daggers
+    .replace(/[‰]/g, '%');      // Replace per mille sign
+}
 export async function scrapeHer() {
   const games: { name: string, url: string }[] = [];
   for (let page = 0; page < 94; page++) {
@@ -26,7 +40,7 @@ export async function scrapeHer() {
 
         // Extract the names and URLs of the games
         gameLinks.forEach(link => {
-          games.push({ name: link.textContent!!.trim(), url: link.getAttribute('href')!! });
+          games.push({ name: replaceFancyASCII(link.textContent!!.trim()), url: link.getAttribute('href')!! });
         });
         console.log(`-- Found ${gameLinks.length} games on page ${page}`);
     } else {
