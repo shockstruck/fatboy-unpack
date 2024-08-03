@@ -4,7 +4,7 @@
     "axios": "^1.7.3",
     "js-search": "^2.0.1",
     "jsdom": "^24.1.1",
-    "ogi-addon": "^0.3.0"
+    "ogi-addon": "0.5.0"
   },
   "devDependencies": {
     "@types/js-search": "^1.4.4",

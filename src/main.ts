@@ -87,6 +87,7 @@ addon.on('search', ({ text, type }, event) => {
       if (fitgirl.length === 0) {
         continue
       }
+      const fitGame = fitgirl.find(fit => extractSimpleName(fit.name)?.includes(""));
       addon.notify({
         message: `Found variant from FitGirl: ${fitgirl[0].name}`,
         id: 'fatboy-unpack-game-found',
@@ -114,7 +115,8 @@ addon.on('search', ({ text, type }, event) => {
         name: game.name,
         downloadURL: game.magnetLink,
         filename: generateHash(game.name),
-        steamAppID: parseInt(text)
+        appID: parseInt(text),
+        storefront: 'steam',
       }
     });
     event.resolve(searchResults);
@@ -123,7 +125,7 @@ addon.on('search', ({ text, type }, event) => {
   
 });
 
-addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFiles }, event) => {
+addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
   event.defer();
   event.log("Setting up fitgirl game...");
   // get the path and open setup.exe
@@ -146,7 +148,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFile
       fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
       event.log(`Setup INI file created at ${path}\\fatboy-setup.inf`);
       event.log(`Opening setup.exe with INI file`);
-      execSync(`${setupPath} /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+      execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
     }
     else {
       event.log(`Opening setup.exe`);
@@ -170,13 +172,17 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, steamAppID, multiPartFile
 
     // exec(setupPath)
     event.resolve({
-      capsuleImage: `https://steamcdn-a.akamaihd.net/steam/apps/${steamAppID}/library_600x900_2x.jpg`,
+      capsuleImage: `https://steamcdn-a.akamaihd.net/steam/apps/${appID}/library_600x900_2x.jpg`,
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
       name: name,
-      steamAppID: steamAppID,
+      appID: appID,
+      storefront: 'steam',
+      addonsource: 'steam',
       version: '1.0.0',
-      launchArguments: ''
+      launchArguments: '',
+      coverImage: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appID}/library_hero.jpg`,
+      titleImage: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appID}/logo_2x.png`
     })
     resolve();
   });
@@ -245,7 +251,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
 
     // Get the magnet link under "Download Mirrors (Torrent)" from 1337x
     let magnetLink = '';
-    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => h3.textContent!!.includes('Download Mirrors (Torrent)'));
+    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors'));
     if (downloadMirrorsHeader) {
       const links = downloadMirrorsHeader.nextElementSibling!!.querySelectorAll('a[href*="magnet:?"]');
       console.log(links)
