@@ -88,12 +88,15 @@ addon.on('search', ({ text, type }, event) => {
         continue
       }
       const fitGame = fitgirl.find(fit => extractSimpleName(fit.name)?.includes(""));
+      if (!fitGame) {
+        continue;
+      }
       addon.notify({
-        message: `Found variant from FitGirl: ${fitgirl[0].name}`,
+        message: `Found variant from FitGirl: ${fitGame.name}`,
         id: 'fatboy-unpack-game-found',
         type: 'info'
       });
-      const gameMetaData = await scrapeGameMetadata(fitgirl[0], generateHash(game.name));
+      const gameMetaData = await scrapeGameMetadata(fitGame, generateHash(game.name));
       addon.notify({
         message: `Found game: ${game.name} with appid: ${text}`,
         id: 'fatboy-unpack-game-found',
@@ -196,6 +199,7 @@ addon.on('connect', () => {
   } else {
     scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
     search.addDocuments(scrapedGames!!);
+    console.log('FitGirl Repacks scraped games loaded');
     addon.notify({
       message: 'FatBoy Unpack Ready',
       id: 'fatboy-unpack-connected',
