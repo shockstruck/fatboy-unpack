@@ -14,7 +14,7 @@ export async function shouldScrape(scrapingInterval: number): Promise<boolean> {
 
 function replaceFancyASCII(text: string) {
   return text
-    .replace(/[‘’‛′`]/g, "'")    // Replace fancy apostrophes
+    .replace(/[‘’‛’′`]/g, "'")    // Replace fancy apostrophes
     .replace(/[“”„″]/g, '"')    // Replace fancy quotes
     .replace(/[‐‑‒–—―]/g, '-')  // Replace fancy dashes
     .replace(/[•‣∙]/g, '*')     // Replace fancy bullets
