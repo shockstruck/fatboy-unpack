@@ -56,7 +56,9 @@ const search = new JsSearch.Search('name');
 search.indexStrategy = new JsSearch.ExactWordIndexStrategy();
 search.addIndex('name');
 
-addon.on('configure', (config) => config)
+addon.on('configure', (config) => config
+  .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
+)
 
 addon.on('search', ({ text, type }, event) => {
   if (scrapedGames === undefined) {
@@ -129,6 +131,7 @@ addon.on('search', ({ text, type }, event) => {
 });
 
 addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
+  const wineSource = addon.config.getStringValue('whereToWine');
   event.defer();
   event.log("Setting up fitgirl game...");
   // get the path and open setup.exe
@@ -155,7 +158,10 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
       }
       else if (process.platform === 'linux') {
-        execSync(`wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+        if (wineSource === 'flatpak')
+          execSync(`flatpak run org.winehq.Wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+        else if (wineSource === 'wine')
+          execSync(`wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
       }
     }
     else {
@@ -164,7 +170,10 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         execSync(`${setupPath}`, { cwd: path });
       }
       else if (process.platform === 'linux') {
-        execSync(`wine "${setupPath}"`, { cwd: path });
+        if (wineSource === 'flatpak')
+          execSync(`flatpak run org.winehq.Wine "${setupPath}"`, { cwd: path });
+        else if (wineSource === 'wine')
+          execSync(`wine "${setupPath}"`, { cwd: path });
       }
     }
 
