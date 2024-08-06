@@ -134,7 +134,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   // get the path and open setup.exe
   new Promise<void>(async (resolve) => {
     const screen = new ConfigurationBuilder()
-      .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process").setDefaultValue(true))
+      .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process (If on linux, we recommend doing it by yourself.)").setDefaultValue(true))
       .addStringOption(option => option.setName("installDir").setDisplayName("Installation Directory").setDescription("The directory where the game will be installed").setInputType('folder'))
 
     if (fs.existsSync(join(path, 'fg-optional-bonus-content.bin'))) {
@@ -151,11 +151,21 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
       event.log(`Setup INI file created at ${path}\\fatboy-setup.inf`);
       event.log(`Opening setup.exe with INI file`);
-      execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+      if (process.platform === 'win32') {
+        execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+      }
+      else if (process.platform === 'linux') {
+        execSync(`wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
+      }
     }
     else {
       event.log(`Opening setup.exe`);
-      execSync(`${setupPath}`, { cwd: path });
+      if (process.platform === 'win32') {
+        execSync(`${setupPath}`, { cwd: path });
+      }
+      else if (process.platform === 'linux') {
+        execSync(`wine "${setupPath}"`, { cwd: path });
+      }
     }
 
     const gameExecutable = await event.askForInput("FitGirl Repacks", "Help us help you.", new ConfigurationBuilder()
