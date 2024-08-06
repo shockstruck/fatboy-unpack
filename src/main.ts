@@ -149,6 +149,15 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     const installDir = input.installDir as string;
     const addBonus = input.addBonus as boolean ?? false;
     const setupINF = makeSetupINF(installDir, addBonus);
+    if (process.platform === 'linux') {
+
+      // ask for the root password
+      let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
+        .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything with this after that.').setInputType('password')
+      ))).rootPassword as string; 
+      execSync(`echo ${rootPassword} | sudo sysctl -w vm.mmap_min_addr=0`);
+      event.log(`Applied patch to allow Wine to launch`);
+    }
     if (input.automate) {
       
       fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
