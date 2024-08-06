@@ -171,9 +171,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
       else if (process.platform === 'linux') {
         if (wineSource === 'flatpak')
-          execSync(`flatpak run org.winehq.Wine "${setupPath}"`, { cwd: path });
+          execSync(`flatpak run org.winehq.Wine setup.exe`, { cwd: path });
         else if (wineSource === 'wine')
-          execSync(`wine "${setupPath}"`, { cwd: path });
+          execSync(`wine setup.exe"`, { cwd: path });
       }
     }
 
