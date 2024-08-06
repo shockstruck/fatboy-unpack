@@ -155,7 +155,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
         .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything with this after that.').setInputType('password')
       ))).rootPassword as string; 
-      execSync(`echo ${rootPassword} | sudo sysctl -w vm.mmap_min_addr=0`);
+      execSync(`echo ${rootPassword}\n | sudo sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
     }
     if (input.automate) {
