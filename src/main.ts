@@ -294,7 +294,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
 
     // Get the magnet link under "Download Mirrors (Torrent)" from 1337x
     let magnetLink = '';
-    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => (h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors')) && h3.textContent!!.includes('Direct links'));
+    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => (h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors')) && !h3.textContent!!.includes('Direct links'));
     if (downloadMirrorsHeader) {
       const links = downloadMirrorsHeader.nextElementSibling!!.querySelectorAll('a[href*="magnet:?"]');
       console.log(links)
