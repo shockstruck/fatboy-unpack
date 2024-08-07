@@ -64,7 +64,7 @@ addon.on('search', ({ text, type }, event) => {
   if (scrapedGames === undefined) {
     event.defer();
     addon.notify({
-      message: 'There are no scraped games available. We are currently scraping FitGirl Repacks.',
+      message: 'There are no scraped games available. Try restarting the addon server or wait for the scrape to complete.',
       id: 'fatboy-unpack-scraping',
       type: 'info'
     });
