@@ -55,4 +55,5 @@ export async function scrapeHer() {
   fs.writeFileSync('fit-scrape-search.json', JSON.stringify(games, null, 2));
   fs.writeFileSync('time-since-scrape.txt', Date.now().toString());
   console.log('Results have been saved to fit-scrape-search.json');
+  process.exit(0);
 }

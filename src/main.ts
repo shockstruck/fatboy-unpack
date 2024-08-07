@@ -153,13 +153,12 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
       // ask for the root password
       let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
-        .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything with this after that.').setInputType('password')
+        .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.').setInputType('password')
       ))).rootPassword as string; 
       execSync(`echo ${rootPassword}\n | sudo sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
     }
     if (input.automate) {
-      
       fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
       event.log(`Setup INI file created at ${path}\\fatboy-setup.inf`);
       event.log(`Opening setup.exe with INI file`);
@@ -219,8 +218,12 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   });
 
 })
+
+addon.on('exit', () => {
+  process.exit(0);
+});
+
 addon.on('connect', () => {
-  
   if (!fs.existsSync('fit-scrape-search.json')) {
     scrapeHer();
     return;
@@ -291,7 +294,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
 
     // Get the magnet link under "Download Mirrors (Torrent)" from 1337x
     let magnetLink = '';
-    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors'));
+    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => (h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors')) && h3.textContent!!.includes('Direct links'));
     if (downloadMirrorsHeader) {
       const links = downloadMirrorsHeader.nextElementSibling!!.querySelectorAll('a[href*="magnet:?"]');
       console.log(links)

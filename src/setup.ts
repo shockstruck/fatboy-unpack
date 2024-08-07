@@ -1,2 +1,4 @@
-import { scrapeHer } from './scraper';
-await scrapeHer();
+import { scrapeHer, shouldScrape } from './scraper';
+if (await shouldScrape(7 * 86400000)) {
+  await scrapeHer();
+}
