@@ -157,6 +157,10 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       ))).rootPassword as string; 
       execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
+      if (wineSource === 'flatpak') {
+        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${path}"`);
+        event.log(`Overrided Wine to allow access to the installation directory`);
+      }
     }
     if (input.automate) {
       fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
