@@ -190,14 +190,17 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       else if (process.platform === 'linux') {
         if (wineSource === 'flatpak') {
           await new Promise<string>((resolve) => {
-            exec(`flatpak run org.winehq.Wine "${setupPath}"`, { cwd: path }, (_, stdout) => {
+            exec(`flatpak run org.winehq.Wine setup.exe`, { cwd: path }, (err, stdout, stderr) => {
+              console.log(err);
+              console.log(stderr);
+              console.log(stdout);
               resolve(stdout);
             });
           })
         }
         else if (wineSource === 'wine')
           await new Promise<string>((resolve) => {
-            exec(`wine "${setupPath}"`, { cwd: path }, (_, stdout) => {
+            exec(`wine setup.exe`, { cwd: path }, (_, stdout) => {
               resolve(stdout);
             });
           });
