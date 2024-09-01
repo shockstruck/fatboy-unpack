@@ -48,12 +48,10 @@ export async function scrapeHer() {
     }
 
     // please be generous, don't spam the server. This is the most expensive part of the script
-    await setTimeout(750);
     console.log('-- Scraped page');
   }
 
   fs.writeFileSync('fit-scrape-search.json', JSON.stringify(games, null, 2));
   fs.writeFileSync('time-since-scrape.txt', Date.now().toString());
   console.log('Results have been saved to fit-scrape-search.json');
-  process.exit(0);
 }

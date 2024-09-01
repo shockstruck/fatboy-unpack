@@ -249,9 +249,22 @@ addon.on('exit', () => {
   process.exit(0);
 });
 
-addon.on('connect', () => {
+addon.on('connect', async () => {
   if (!fs.existsSync('fit-scrape-search.json')) {
-    scrapeHer();
+    addon.notify({
+      message: 'Scrapes are invalid, scraping FitGirl...',
+      id: 'fatboy-unpack-scraping',
+      type: 'info'
+    });
+    await scrapeHer();
+    scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+    search.addDocuments(scrapedGames!!);
+    console.log('FitGirl Repacks scraped games loaded');
+    addon.notify({
+      message: 'FatBoy Unpack Ready',
+      id: 'fatboy-unpack-connected',
+      type: 'info'
+    });
     return;
   } else {
     scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
@@ -264,9 +277,9 @@ addon.on('connect', () => {
     });
   }
   new Promise<void>(async (resolve) => {
-    if (await shouldScrape(7 * 86400000)) {
+    if (await shouldScrape(2 * 86400000)) {
       addon.notify({
-        message: 'Scrapes are invalid, scraping FitGirl...',
+        message: 'Updating scrape of FitGirl Repacks...',
         id: 'fatboy-unpack-scraping',
         type: 'info'
       });
