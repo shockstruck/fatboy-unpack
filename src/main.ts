@@ -32,12 +32,12 @@ type GameInfo = {
 
 async function getSteamApps(): Promise<{ appid: string, name: string }[]> {
   if (fs.existsSync('steam-apps.json')) {
-    const steamApps: { timeSinceUpdate: number, data: {appid: string, name: string}[] } = JSON.parse(fs.readFileSync('steam-apps.json', 'utf-8'));
+    const steamApps: { timeSinceUpdate: number, data: { appid: string, name: string }[] } = JSON.parse(fs.readFileSync('steam-apps.json', 'utf-8'));
     if (Date.now() - steamApps.timeSinceUpdate < 86400000) { //24 hours
       return steamApps.data;
     }
   }
-  const response = await axios.get('https://api.steampowered.com/ISteamApps/GetAppList/v0002/?key=STEAMKEY&format=json') 
+  const response = await axios.get('https://api.steampowered.com/ISteamApps/GetAppList/v0002/?key=STEAMKEY&format=json')
   const steamApps = response.data.applist.apps;
   fs.writeFileSync('steam-apps.json', JSON.stringify({ timeSinceUpdate: Date.now(), data: steamApps }, null, 2));
   return steamApps
@@ -64,7 +64,7 @@ addon.on('search', ({ text, type }, event) => {
   if (scrapedGames === undefined) {
     event.defer();
     addon.notify({
-      message: 'There are no scraped games available. Try restarting the addon server or wait for the scrape to complete.',
+      message: 'FatBoy: There are no scraped games available. Try restarting the addon server or wait for the scrape to complete.',
       id: 'fatboy-unpack-scraping',
       type: 'info'
     });
@@ -104,6 +104,7 @@ addon.on('search', ({ text, type }, event) => {
         id: 'fatboy-unpack-game-found',
         type: 'info'
       })
+
       if (gameMetaData) {
         results.push(gameMetaData);
       }
@@ -112,7 +113,7 @@ addon.on('search', ({ text, type }, event) => {
 
     // turn GameInfo into search result
     const searchResults: SearchResult[] = results.map((game: GameInfo) => {
-      return { 
+      return {
         coverURL: game.coverImage,
         description: game.company ? `Made By: ${game.company}` : 'No company information available',
         downloadSize: 0,
@@ -127,7 +128,7 @@ addon.on('search', ({ text, type }, event) => {
     event.resolve(searchResults);
     resolve();
   });
-  
+
 });
 
 addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
@@ -154,7 +155,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       // ask for the root password
       let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
         .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.').setInputType('password')
-      ))).rootPassword as string; 
+        ))).rootPassword as string;
       execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
       if (wineSource === 'flatpak') {
@@ -249,34 +250,34 @@ addon.on('exit', () => {
   process.exit(0);
 });
 
-addon.on('connect', async () => {
-  if (!fs.existsSync('fit-scrape-search.json')) {
-    addon.notify({
-      message: 'Scrapes are invalid, scraping FitGirl...',
-      id: 'fatboy-unpack-scraping',
-      type: 'info'
-    });
-    await scrapeHer();
-    scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-    search.addDocuments(scrapedGames!!);
-    console.log('FitGirl Repacks scraped games loaded');
-    addon.notify({
-      message: 'FatBoy Unpack Ready',
-      id: 'fatboy-unpack-connected',
-      type: 'info'
-    });
-    return;
-  } else {
-    scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-    search.addDocuments(scrapedGames!!);
-    console.log('FitGirl Repacks scraped games loaded');
-    addon.notify({
-      message: 'FatBoy Unpack Ready',
-      id: 'fatboy-unpack-connected',
-      type: 'info'
-    });
-  }
+addon.on('connect', () => {
   new Promise<void>(async (resolve) => {
+    if (!fs.existsSync('fit-scrape-search.json')) {
+      addon.notify({
+        message: 'Scrapes are invalid, scraping FitGirl...',
+        id: 'fatboy-unpack-scraping',
+        type: 'info'
+      });
+      await scrapeHer();
+      scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+      search.addDocuments(scrapedGames!!);
+      console.log('FitGirl Repacks scraped games loaded');
+      addon.notify({
+        message: 'FatBoy Unpack Ready',
+        id: 'fatboy-unpack-connected',
+        type: 'success'
+      });
+      return;
+    } else {
+      scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+      search.addDocuments(scrapedGames!!);
+      console.log('FitGirl Repacks scraped games loaded');
+      addon.notify({
+        message: 'FatBoy Unpack Ready',
+        id: 'fatboy-unpack-connected',
+        type: 'success'
+      });
+    }
     if (await shouldScrape(2 * 86400000)) {
       addon.notify({
         message: 'Updating scrape of FitGirl Repacks...',
@@ -290,12 +291,11 @@ addon.on('connect', async () => {
       addon.notify({
         message: 'FitGirl Repacks scraped games loaded',
         id: 'fatboy-unpack-scraped',
-        type: 'info'
+        type: 'success'
       });
     }
     resolve();
   });
-  
 });
 
 function generateHash(str: string) {
@@ -308,7 +308,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
   if (fs.existsSync(`./repack-data-scrapes/${hash}.json`)) {
     return JSON.parse(fs.readFileSync(`./repack-data-scrapes/${hash}.json`, 'utf-8')) as GameInfo;
   }
-  const response = await axios.get(game.url); 
+  const response = await axios.get(game.url);
   const dom = new JSDOM(response.data);
   const document = dom.window.document;
 
@@ -354,7 +354,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
   });
 
   fs.mkdirSync('./repack-data-scrapes', { recursive: true });
-  
+
   fs.writeFileSync(`./repack-data-scrapes/${hash}.json`, JSON.stringify(data, null, 2));
   return data;
 }
@@ -364,31 +364,6 @@ function extractSimpleName(input: string) {
   const regex = /^(.+?)([:\-–])/;
   const match = input.match(regex);
   return match ? match[1].trim() : null;
-}
-
-async function getRealGame(titleId: string): Promise<string | undefined> {
-  const response = await axios.get(`https://store.steampowered.com/api/appdetails?appids=${titleId}`);
-  if (!response.data[titleId].success) {
-    return undefined;
-  }
-  if (response.data[titleId].data.type === 'game') {
-    return titleId;
-  }
-
-  if (response.data[titleId].data.type === 'dlc' || response.data[titleId].data.type === 'dlc_sub' || response.data[titleId].data.type === 'music' || response.data[titleId].data.type === 'video' || response.data[titleId].data.type === 'episode') { 
-    return response.data[titleId].data.fullgame.appid;
-  }
-  if (response.data[titleId].data.type === 'demo') {
-    return response.data[titleId].data.fullgame.appid;
-  }
-}
-async function matchSteamAppID(title: string): Promise<string | undefined> {
-  const steamAppId = steamAppMatcher.search(title);
-  console.log(steamAppId);
-  if (steamAppId.length === 0) {
-    return undefined;
-  }
-  return getRealGame((steamAppId[0] as any).appid);
 }
 
 function makeSetupINF(installDir: string, addBonus: boolean) {
