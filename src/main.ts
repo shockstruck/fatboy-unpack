@@ -1,6 +1,5 @@
-import OGIAddon, { ConfigurationBuilder, SearchResult } from "ogi-addon";
+import OGIAddon, { ConfigurationBuilder, SearchResult, SearchTool } from "ogi-addon";
 import fs from "fs";
-import * as JsSearch from "js-search";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
@@ -30,31 +29,11 @@ type GameInfo = {
   steamAppId?: string
 }
 
-async function getSteamApps(): Promise<{ appid: string, name: string }[]> {
-  if (fs.existsSync('steam-apps.json')) {
-    const steamApps: { timeSinceUpdate: number, data: { appid: string, name: string }[] } = JSON.parse(fs.readFileSync('steam-apps.json', 'utf-8'));
-    if (Date.now() - steamApps.timeSinceUpdate < 86400000) { //24 hours
-      return steamApps.data;
-    }
-  }
-  const response = await axios.get('https://api.steampowered.com/ISteamApps/GetAppList/v0002/?key=STEAMKEY&format=json')
-  const steamApps = response.data.applist.apps;
-  fs.writeFileSync('steam-apps.json', JSON.stringify({ timeSinceUpdate: Date.now(), data: steamApps }, null, 2));
-  return steamApps
-}
-
-
 let scrapedGames: Game[] | undefined = undefined;
-
-const steamApps: { appid: string, name: string }[] = await getSteamApps();
-const steamAppMatcher = new JsSearch.Search('appid');
-steamAppMatcher.indexStrategy = new JsSearch.ExactWordIndexStrategy();
-steamAppMatcher.addIndex('appid');
-steamAppMatcher.addDocuments(steamApps);
-
-const search = new JsSearch.Search('name');
-search.indexStrategy = new JsSearch.ExactWordIndexStrategy();
-search.addIndex('name');
+const search = new SearchTool<Game>([], ['name'], {
+  threshold: 0.1,
+  includeScore: true
+})
 
 addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
@@ -79,13 +58,14 @@ addon.on('search', ({ text, type }, event) => {
   new Promise<void>(async (resolve) => {
     let results: GameInfo[] = []
     let amountOfScrapes = 0;
-    for (const gameObj of steamAppMatcher.search(text)) {
+    for (const gameObj of await addon.steamSearch(text)) {
       if (amountOfScrapes >= 5) {
         break;
       }
-      const game = gameObj as { appid: string, name: string };
+      amountOfScrapes++;
+      const game = gameObj;
       // now get the game metadata from fitgirl
-      const fitgirl = search.search(game.name) as Game[];
+      const fitgirl = search.search(game.name);
       if (fitgirl.length === 0) {
         continue
       }
@@ -99,16 +79,11 @@ addon.on('search', ({ text, type }, event) => {
         type: 'info'
       });
       const gameMetaData = await scrapeGameMetadata(fitGame, generateHash(game.name));
-      addon.notify({
-        message: `Found game: ${game.name} with appid: ${text}`,
-        id: 'fatboy-unpack-game-found',
-        type: 'info'
-      })
 
       if (gameMetaData) {
         results.push(gameMetaData);
       }
-      amountOfScrapes++;
+      break
     }
 
     // turn GameInfo into search result
@@ -251,17 +226,21 @@ addon.on('exit', () => {
 });
 
 addon.on('connect', () => {
+  
   new Promise<void>(async (resolve) => {
+    let task = await addon.task();
+    task.log('Checking if scrape is valid...');
     if (!fs.existsSync('fit-scrape-search.json')) {
       addon.notify({
         message: 'Scrapes are invalid, scraping FitGirl...',
         id: 'fatboy-unpack-scraping',
         type: 'info'
       });
-      await scrapeHer();
+      task.log('Scraping FitGirl...');
+      await scrapeHer(task);
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-      search.addDocuments(scrapedGames!!);
-      console.log('FitGirl Repacks scraped games loaded');
+      search.addItems(scrapedGames!!);
+      task.log('FitGirl Repacks scraped games loaded');
       addon.notify({
         message: 'FatBoy Unpack Ready',
         id: 'fatboy-unpack-connected',
@@ -270,8 +249,8 @@ addon.on('connect', () => {
       return;
     } else {
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-      search.addDocuments(scrapedGames!!);
-      console.log('FitGirl Repacks scraped games loaded');
+      search.addItems(scrapedGames!!);
+      task.log('FitGirl Repacks scraped games loaded');
       addon.notify({
         message: 'FatBoy Unpack Ready',
         id: 'fatboy-unpack-connected',
@@ -284,16 +263,19 @@ addon.on('connect', () => {
         id: 'fatboy-unpack-scraping',
         type: 'info'
       });
-      await scrapeHer();
+      task.log('Scraping FitGirl...');
+      await scrapeHer(task);
 
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-      search.addDocuments(scrapedGames!!);
+      search.addItems(scrapedGames!!);
       addon.notify({
         message: 'FitGirl Repacks scraped games loaded',
         id: 'fatboy-unpack-scraped',
         type: 'success'
       });
+      task.log('Scraping FitGirl...');
     }
+    task.finish();
     resolve();
   });
 });

@@ -2,6 +2,7 @@ import fs from 'fs';
 import { JSDOM } from 'jsdom';
 import axios from 'axios';
 import { setTimeout } from 'timers/promises';
+import { CustomTask } from 'ogi-addon';
 export async function shouldScrape(scrapingInterval: number): Promise<boolean> {
   const timeSinceScrape = fs.existsSync('time-since-scrape.txt') ? parseInt(fs.readFileSync('time-since-scrape.txt', 'utf-8')) : 0;
   if (Date.now() - timeSinceScrape < scrapingInterval) {
@@ -25,10 +26,41 @@ function replaceFancyASCII(text: string) {
     .replace(/[†‡]/g, '+')      // Replace daggers
     .replace(/[‰]/g, '%');      // Replace per mille sign
 }
-export async function scrapeHer() {
+
+export async function findPageCount() {
+  const pageFinder = await axios.get('https://fitgirl-repacks.site/all-my-repacks-a-z/');
+  const dom = new JSDOM(pageFinder.data);
+  const document = dom.window.document;
+  const paginator = document.querySelector('ul.lcp_paginator');
+
+  if (paginator) {
+    const pageLinks = paginator.querySelectorAll<HTMLAnchorElement>('a[title]');
+
+    if (pageLinks.length >= 2) {
+      const lastPageLink = pageLinks[pageLinks.length - 2];
+      const lastPageNumber = lastPageLink.title;
+      return Number(lastPageNumber);
+    } else {
+      console.log('Could not find enough page links to determine the last page.');
+    }
+  } else {
+    console.log('Pagination container element not found on the page.');
+  }
+  return 0;
+}
+export async function scrapeHer(task: CustomTask) {
   const games: { name: string, url: string }[] = [];
-  for (let page = 0; page < 94; page++) {
-    console.log(`Scraping page ${page}`);
+  const pageCount = await findPageCount();
+  if (pageCount === 0 || isNaN(pageCount)) {
+    task.log('No page count found, major error. Please report this to the developer.');
+    task.finish();
+    return;
+  }
+  task.log(`Found ${pageCount} pages to scrape`);
+  // 0-100
+  task.setProgress(0);
+  for (let page = 0; page <= pageCount; page++) {
+    task.setProgress(page / pageCount * 100);
     const response = await axios.get(`https://fitgirl-repacks.site/all-my-repacks-a-z/?lcp_page0=${page}#lcp_instance_0`)
     const dom = new JSDOM(response.data);
     const document = dom.window.document;
@@ -42,9 +74,9 @@ export async function scrapeHer() {
         gameLinks.forEach(link => {
           games.push({ name: replaceFancyASCII(link.textContent!!.trim()), url: link.getAttribute('href')!! });
         });
-        console.log(`-- Found ${gameLinks.length} games on page ${page}`);
+        task.log(`-- Found ${gameLinks.length} games on page ${page}`);
     } else {
-      console.log('No entry-content div found');
+      task.log('No entry-content div found');
     }
 
     // please be generous, don't spam the server. This is the most expensive part of the script
