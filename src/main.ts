@@ -246,6 +246,7 @@ addon.on('connect', () => {
         id: 'fatboy-unpack-connected',
         type: 'success'
       });
+      task.finish();
       return;
     } else {
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
