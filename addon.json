@@ -1,5 +1,6 @@
 {
-  "author": "Nat3z",
+  "author": "Fat-Addons",
+  "icon": "icon.jpg",
   "scripts": {
     "preSetup": "bun install",
     "run": "bun run ./src/main.ts"

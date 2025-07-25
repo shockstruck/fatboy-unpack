@@ -3,17 +3,18 @@ import fs from "fs";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
-import { exec, execSync, spawn } from "child_process";
+import { exec, execSync } from "child_process";
 import { scrapeHer, shouldScrape } from "./scraper";
 import { join } from "path";
 
 const addon = new OGIAddon({
-  author: "Nat3z",
+  author: "Fat-Addons",
   description: "A FitGirl Repack scraper.",
   name: "Fatboy Unpack",
   id: "fatboy-unpack",
-  repository: "https://github.com/Nat3z/fatboy-unpack",
-  version: "1.0.0"
+  repository: "https://github.com/Fat-Addons/fatboy-unpack",
+  version: "1.0.0",
+  storefronts: ["steam"]
 });
 
 type Game = {
@@ -39,7 +40,7 @@ addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
 )
 
-addon.on('search', ({ text, type }, event) => {
+addon.on('search', ({ appID, storefront }, event) => {
   if (scrapedGames === undefined) {
     event.defer();
     addon.notify({
@@ -50,40 +51,41 @@ addon.on('search', ({ text, type }, event) => {
     event.resolve([]);
     return;
   }
-  event.defer();
-  if (type !== 'steamapp') {
-    event.resolve([]);
-    return;
-  }
-  new Promise<void>(async (resolve) => {
-    let results: GameInfo[] = []
-    let amountOfScrapes = 0;
-    for (const gameObj of await addon.steamSearch(text)) {
-      if (amountOfScrapes >= 5) {
-        break;
-      }
-      amountOfScrapes++;
-      const game = gameObj;
-      // now get the game metadata from fitgirl
-      const fitgirl = search.search(game.name);
-      if (fitgirl.length === 0) {
-        continue
-      }
-      const fitGame = fitgirl.find(fit => extractSimpleName(fit.name)?.includes(""));
-      if (!fitGame) {
-        continue;
-      }
-      addon.notify({
-        message: `Found variant from FitGirl: ${fitGame.name}`,
-        id: 'fatboy-unpack-game-found',
-        type: 'info'
-      });
-      const gameMetaData = await scrapeGameMetadata(fitGame, generateHash(game.name));
 
-      if (gameMetaData) {
-        results.push(gameMetaData);
-      }
-      break
+  addon.notify({
+    message: 'Searching for game...',
+    id: 'fatboy-unpack-searching',
+    type: 'info'
+  })
+  event.defer(async () => {
+    console.log('should be deferred')
+    let results: GameInfo[] = [];
+    addon.notify({
+      message: `Getting game details... ${appID} ${storefront}`,
+      id: 'fatboy-unpack-getting-game-details',
+      type: 'info'
+    })
+    const game = await addon.getAppDetails(appID, storefront);
+    if (!game) {
+      event.resolve([]);
+      return;
+    }
+    // now get the game metadata from fitgirl
+    const fitGame = search.search(game.name);
+    if (fitGame.length === 0) {
+      event.resolve([]);
+      return;
+    }
+    
+    addon.notify({
+      message: `Found variant from FitGirl: ${fitGame[0].name}`,
+      id: 'fatboy-unpack-game-found',
+      type: 'info'
+    });
+    const gameMetaData = await scrapeGameMetadata(fitGame[0], generateHash(game.name));
+
+    if (gameMetaData) {
+      results.push(gameMetaData);
     }
 
     // turn GameInfo into search result
@@ -96,13 +98,13 @@ addon.on('search', ({ text, type }, event) => {
         name: game.name,
         downloadURL: game.magnetLink,
         filename: generateHash(game.name),
-        appID: parseInt(text),
+        appID: appID,
         storefront: 'steam',
       }
     });
     event.resolve(searchResults);
-    resolve();
   });
+
 
 });
 
@@ -204,17 +206,10 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
     // exec(setupPath)
     event.resolve({
-      capsuleImage: `https://steamcdn-a.akamaihd.net/steam/apps/${appID}/library_600x900_2x.jpg`,
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
-      name: name,
-      appID: appID,
-      storefront: 'steam',
-      addonsource: 'steam',
       version: '1.0.0',
-      launchArguments: '',
-      coverImage: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appID}/library_hero.jpg`,
-      titleImage: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appID}/logo_2x.png`
+      launchArguments: ''
     })
     resolve();
   });
