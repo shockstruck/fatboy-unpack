@@ -279,7 +279,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
       if (wineSource === 'flatpak') {
-        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${join(path, 'INSTALL HERE')}"`);
+        // fix the path for flatpak to escape common characters that cause issues (like :, \, &, etc.)
+        const installHerePath = join(path, 'INSTALL HERE').replace(/[:\/\\&]/g, '\\$&');
+        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${installHerePath}"`);
         event.log(`Overrided Wine to allow access to the installation directory`);
       }
     }
