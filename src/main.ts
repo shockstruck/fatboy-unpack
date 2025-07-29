@@ -3,7 +3,7 @@ import fs from "fs";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
-import { exec, execSync } from "child_process";
+import { exec, execSync, spawn } from "child_process";
 import { scrapeHer, shouldScrape } from "./scraper";
 import { join } from "path";
 
@@ -108,27 +108,170 @@ addon.on('search', ({ appID, storefront }, event) => {
 
 });
 
+function spawnAndHook(options: {
+  stdout?: (data: string) => void,
+  stderr?: (data: string) => void,
+  onClose?: (code: number) => void,
+  onError?: (err: Error) => void,
+  cwd?: string,
+}, command: Parameters<typeof spawn>[0], args: Parameters<typeof spawn>[1]) {
+  const spawnOptions = options.cwd ? { cwd: options.cwd } : {};
+  console.log('running: ' + command + ' ' + args.join(' '));
+  const childProcess = spawn(command, args, spawnOptions);
+  let stdout = '';
+  let stderr = '';
+  
+  if (childProcess.stdout) {
+    childProcess.stdout.on('data', (data: Buffer) => {
+      const dataStr = data.toString();
+      stdout += dataStr;
+      if (options.stdout) {
+        options.stdout(dataStr);
+      }
+    });
+  }
+  
+  if (childProcess.stderr) {
+    childProcess.stderr.on('data', (data: Buffer) => {
+      const dataStr = data.toString();
+      stderr += dataStr;
+      if (options.stderr) {
+        options.stderr(dataStr);
+      }
+    });
+  }
+  
+  if (options.onClose) {
+    childProcess.on('close', (code: number) => {
+      options.onClose?.(code);
+    });
+  }
+  
+  if (options.onError) {
+    childProcess.on('error', (err: Error) => {
+      options.onError?.(err);
+    });
+  }
+  
+  return {
+    process: childProcess,
+    stdout,
+    stderr
+  }
+}
 addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
-  const wineSource = addon.config.getStringValue('whereToWine');
+  const wineSource = addon.config.getStringValue('whereToWine') || 'flatpak';
   event.defer();
   event.log("Setting up fitgirl game...");
   // get the path and open setup.exe
-  new Promise<void>(async (resolve) => {
-    const screen = new ConfigurationBuilder()
-      .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process (If on linux, we recommend doing it by yourself.)").setDefaultValue(true))
-      .addStringOption(option => option.setName("installDir").setDisplayName("Installation Directory").setDescription("The directory where the game will be installed").setInputType('folder'))
 
-    if (fs.existsSync(join(path, 'fg-optional-bonus-content.bin'))) {
-      screen.addBooleanOption(option => option.setName("addBonus").setDisplayName("Add Bonus Content").setDescription("Add the optional bonus content to the installation"))
+  // check if wine is instaleld in that source by running the help command check if it fails 
+
+  new Promise<void>(async (resolve) => {
+    let hasWine = process.platform === 'win32' ? true : false;
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '~/';
+    const winePrefixDir = join(homeDir, '.wine-fitgirl');
+    if (wineSource === 'flatpak' && process.platform !== 'win32') {
+      try {
+        execSync(`flatpak run org.winehq.Wine --help`);
+        hasWine = true;
+        event.log('Wine is installed in flatpak.');
+      } catch (err) {
+        event.log('Wine is not installed in flatpak. Installing it...');
+        // install wine in flatpak
+        // then test it one more time
+        try {
+          // Automatically press 2 for user-level install by echoing '2' into flatpak install
+          event.log('Installing wine in flatpak...');
+          await new Promise<void>((resolve) => {
+            spawnAndHook({
+              stdout: (data: string) => {
+                event.log('- ' + data);
+              },
+              stderr: (data: string) => {
+                console.log('- ' + data);
+              },
+              onClose: (code: number) => {
+                if (code !== 0) {
+                  console.error('FLATPAK ERROR: Exit code ' + code);
+                  event.fail('Error installing wine in flatpak. Please install it manually and try again.');
+                  return;
+                }
+                event.log('Wine installed in flatpak.');
+                resolve();
+              },
+              onError: (err: Error) => {
+                console.error('FLATPAK ERROR:', err);
+                event.fail('Error installing wine in flatpak. Please install it manually and try again.');
+              }
+            }, 'flatpak', [
+              'install', '--system', '-y', 'flathub', 'org.winehq.Wine/x86_64/stable-24.08'
+            ]);
+          });
+          execSync(`flatpak run org.winehq.Wine --help`);
+          event.log('Wine is installed in flatpak.');
+          // create a prefix for fitgirl
+          // Create the Wine prefix directory in the user's home directory as .wine-fitgirl 
+          fs.mkdirSync(winePrefixDir, { recursive: true });
+        } catch (err) {
+          console.error(err);
+          event.fail('Wine is not installed in flatpak. Please install it in flatpak and try again. We tried to install it for you, but it failed. Please try again.');
+          console.log('no flat');
+          return;
+        }
+        hasWine = true;
+      }
     }
-    const input = await event.askForInput("FitGirl Repacks", "Setup your FitGirl Repack", screen)
+    else if (wineSource === 'wine' && process.platform !== 'win32') {
+      try {
+        execSync(`wine --help`);
+        hasWine = true;
+        event.log('Wine is installed in PATH.');
+      } catch (err) {
+        event.fail('Wine is not installed in PATH. We recommend using the flatpak version of wine for a smoother experience.');
+        return;
+      }
+    }
+
+    if (!hasWine) {
+      event.fail('Wine is not installed in PATH. We recommend using the flatpak version of wine for a smoother experience.');
+      return;
+    }
+
+    let input: {
+      automate: boolean,
+      installDir: string,
+      addBonus: boolean
+    } | undefined = undefined
+    if (process.platform !== 'linux') {
+      const screen = new ConfigurationBuilder()
+        .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process (If on linux, we recommend doing it by yourself.)").setDefaultValue(true))
+        .addStringOption(option => option.setName("installDir").setDisplayName("Installation Directory").setDescription("The directory where the game will be installed").setInputType('folder'))
+
+      if (fs.existsSync(join(path, 'fg-optional-bonus-content.bin'))) {
+        screen.addBooleanOption(option => option.setName("addBonus").setDisplayName("Add Bonus Content").setDescription("Add the optional bonus content to the installation"))
+      }
+      input = await event.askForInput("FitGirl Repacks", "Setup your FitGirl Repack", screen) as {
+        automate: boolean,
+        installDir: string,
+        addBonus: boolean
+      }
+    } else {
+      input = {
+        automate: false,
+        installDir: path,
+        addBonus: false
+      }
+    }
 
     const setupPath = join(path, 'setup.exe');
-    const installDir = input.installDir as string;
+    let installDir = input.installDir as string;
     const addBonus = input.addBonus as boolean ?? false;
     const setupINF = makeSetupINF(installDir, addBonus);
-    if (process.platform === 'linux') {
 
+    // add a directory to the path called 'INSTALL HERE'
+    if (process.platform === 'linux') {
+      fs.mkdirSync(join(path, 'INSTALL HERE'), { recursive: true });
       // ask for the root password
       let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
         .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.').setInputType('password')
@@ -136,7 +279,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
       event.log(`Applied patch to allow Wine to launch`);
       if (wineSource === 'flatpak') {
-        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${path}"`);
+        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${join(path, 'INSTALL HERE')}"`);
         event.log(`Overrided Wine to allow access to the installation directory`);
       }
     }
@@ -149,17 +292,22 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
       else if (process.platform === 'linux') {
         if (wineSource === 'flatpak') {
-          await new Promise<string>((resolve) => {
-            exec(`flatpak run org.winehq.Wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path }, (_, stdout) => {
-              resolve(stdout);
-            });
+          await new Promise<string>((resolve, reject) => {
+            const stdout = execSync('flatpak --env="WINEPREFIX=' + winePrefixDir + '" run org.winehq.Wine setup.exe /SILENT /LOADINF=fatboy-setup.inf', { cwd: path });
+            resolve(stdout.toString());
           });
         }
         else if (wineSource === 'wine') {
-          await new Promise<string>((resolve) => {
-            exec(`wine "${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path }, (_, stdout) => {
-              resolve(stdout);
-            });
+          await new Promise<string>((resolve, reject) => {
+            const { stdout } = spawnAndHook({
+              cwd: path,
+              onClose: (code: number) => {
+                resolve(stdout);
+              },
+              onError: (err: Error) => {
+                reject(err);
+              }
+            }, 'wine', [setupPath, '/SILENT', '/LOADINF=fatboy-setup.inf']);
           });
         }
       }
@@ -170,24 +318,117 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         execSync(`${setupPath}`, { cwd: path });
       }
       else if (process.platform === 'linux') {
-        if (wineSource === 'flatpak') {
-          await new Promise<string>((resolve) => {
-            exec(`flatpak run org.winehq.Wine setup.exe`, { cwd: path }, (err, stdout, stderr) => {
-              console.log(err);
-              console.log(stderr);
-              console.log(stdout);
-              resolve(stdout);
-            });
-          })
+        let acknowledged = false
+        while (!acknowledged) {
+          let acknowledge = await event.askForInput("FitGirl Repacks", "Before we launch the setup, it's important to know that when you are selecting the destination location, you MUST use the Z drive (even if you are using an SD Card). If you are using an SD Card, go to Z:\\" + path.replaceAll('/', '\\') + "\\INSTALL HERE", new ConfigurationBuilder()
+            .addBooleanOption(option => option
+              .setDisplayName('I Understand')
+              .setName('understood')
+              .setDescription('I understand that I need to use the Z drive in order to properly install my repack.')
+              .setDefaultValue(false)
+            )  
+          );
+          if (acknowledge.understood === true) {
+            acknowledge = await event.askForInput("FitGirl Repacks", "When selecting the destination location, select the folder with the name \"INSTALL HERE\" so we can smoothly move the contents of the folder to the path.", new ConfigurationBuilder()
+              .addBooleanOption(option => option
+                .setDisplayName('I Understand')
+                .setName('understood')
+                .setDescription('I understand that I need to select the folder with the name \"INSTALL HERE\" so FatBoy can smoothly move the contents of the folder to the path.')
+                .setDefaultValue(false)
+              )
+            );
+            if (acknowledge.understood === true) {
+              acknowledged = true;
+            }
+          }
         }
-        else if (wineSource === 'wine')
-          await new Promise<string>((resolve) => {
-            exec(`wine setup.exe`, { cwd: path }, (_, stdout) => {
-              resolve(stdout);
-            });
-          });
+        event.log(`Acknowledged`);
+        let forceStop = false;
+        if (wineSource === 'flatpak') {
+          try {
+            await new Promise<string>((resolve, reject) => {
+              const result = execSync('flatpak --env="WINEPREFIX=' + winePrefixDir + '" run org.winehq.Wine setup.exe', { cwd: path });
+              resolve(result.toString());
+            })
+          } catch (err) {
+            event.log(`Error opening setup.exe: ${err}`);
+            event.fail('Error opening setup.exe. Check if wine is installed in "' + wineSource + '" and if it is, try again.');
+            forceStop = true;
+          }
+          
+        }
+        else if (wineSource === 'wine') {
+          try {
+            await new Promise<string>((resolve, reject) => {
+              const result = execSync('WINEPREFIX="' + winePrefixDir + '" wine setup.exe', { cwd: path });
+              resolve(result.toString());
+            }) 
+          } catch (err) {
+            event.log(`Error opening setup.exe: ${err}`);
+            event.fail('Error opening setup.exe. Check if wine is installed in "' + wineSource + '" and if it is, try again.');
+            forceStop = true;
+          }
+        }
+        if (forceStop) {
+          return;
+        }
+
+        // delete all other files and folders in the path except the 'INSTALL HERE' directory        
+        event.log(`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`);
+        fs.readdirSync(path).forEach(file => {
+          if (file !== 'INSTALL HERE') {
+            const fullPath = join(path, file);
+            const stat = fs.lstatSync(fullPath);
+            if (stat.isDirectory()) {
+              fs.rmSync(fullPath, { recursive: true, force: true });
+            } else {
+              fs.unlinkSync(fullPath);
+            }
+          }
+        });
+        event.log('Deleted.');
+
+        // move the contents of 'INSTALL HERE' directory to the path
+        installDir = path;
+        const installHereDir = join(path, 'INSTALL HERE');
+        
+        if (fs.existsSync(installHereDir)) {
+          // Check if there's content in INSTALL HERE
+          const installHereFiles = fs.readdirSync(installHereDir);
+          
+          if (installHereFiles.length > 0) {
+            // If there's a single nested folder, move its contents up
+            if (installHereFiles.length === 1 && fs.statSync(join(installHereDir, installHereFiles[0])).isDirectory()) {
+              const nestedDir = join(installHereDir, installHereFiles[0]);
+              const nestedFiles = fs.readdirSync(nestedDir);
+              
+              // Move all files from the nested directory to the parent path
+              for (const file of nestedFiles) {
+                const sourcePath = join(nestedDir, file);
+                const destPath = join(installDir, file);
+                fs.renameSync(sourcePath, destPath);
+              }
+              event.log(`Moved contents from nested directory '${installHereFiles[0]}' to ${installDir}`);
+            } else {
+              // Move all files from INSTALL HERE to the parent path
+              for (const file of installHereFiles) {
+                const sourcePath = join(installHereDir, file);
+                const destPath = join(installDir, file);
+                fs.renameSync(sourcePath, destPath);
+              }
+              event.log(`Moved contents from 'INSTALL HERE' directory to ${installDir}`);
+            }
+
+            // then, delete the 'INSTALL HERE' directory
+            fs.rmSync(installHereDir, { recursive: true, force: true });
+          }
+          
+          // Remove the now-empty INSTALL HERE directory
+          fs.rmSync(installHereDir, { recursive: true, force: true });
+        }
       }
     }
+
 
     const gameExecutable = await event.askForInput("FitGirl Repacks", "Help us help you.", new ConfigurationBuilder()
       .addStringOption(option => option
@@ -195,6 +436,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         .setDisplayName('Working Directory')
         .setDescription('Go to the directory: ' + (installDir ?? '(where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
         .setInputType('folder')
+        .setDefaultValue(installDir)
       )
       .addStringOption(option => option
         .setName("gameExecutable")
@@ -220,8 +462,9 @@ addon.on('exit', () => {
   process.exit(0);
 });
 
-addon.on('connect', () => {
-  
+addon.on('connect', async () => {
+  // detect firstly if we can access fitigrl
+  const response = await axios.get('https://fitgirl-repacks.site/');
   new Promise<void>(async (resolve) => {
     let task = await addon.task();
     task.log('Checking if scrape is valid...');
