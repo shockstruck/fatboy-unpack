@@ -276,13 +276,15 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
         .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.').setInputType('password')
         ))).rootPassword as string;
-      execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
-      event.log(`Applied patch to allow Wine to launch`);
+
+      // gonna test this too see if it works without it
+      // execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
+      // event.log(`Applied patch to allow Wine to launch`);
       if (wineSource === 'flatpak') {
-        // fix the path for flatpak to escape common characters that cause issues (like :, \, &, etc.)
-        const installHerePath = join(path, 'INSTALL HERE').replace(/[:\/\\&]/g, '\\$&');
-        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${installHerePath}"`);
-        event.log(`Overrided Wine to allow access to the installation directory`);
+        // make path work inside of a command line
+        const escapedPath = path.replace(/[:\/\\&!]/g, '\\$&');
+        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${escapedPath}"`);
+        event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
       }
     }
     if (input.automate) {
