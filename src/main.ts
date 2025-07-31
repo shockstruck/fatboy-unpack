@@ -156,7 +156,8 @@ function spawnAndHook(options: {
   return {
     process: childProcess,
     stdout,
-    stderr
+    stderr,
+    stdin: childProcess.stdin
   }
 }
 addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
@@ -275,7 +276,6 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
       let rootPassword: string | undefined;
       let sudoSuccess = false;
-      const escapedPath = path.replace(/[:\/\\&!]/g, '\\$&');
 
       // Only needed for flatpak, but we want to check sudo password validity
       if (wineSource === 'flatpak') {
@@ -307,8 +307,29 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
         // Now apply the flatpak override
         try {
-          execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${escapedPath}"`);
-          event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
+          await new Promise<string>((resolve, reject) => {
+            const process = spawnAndHook({
+              stdout: (data: string) => {
+                event.log(data);
+              },
+              stderr: (data: string) => {
+                event.log(data);
+              },
+              onClose: (code: number) => {
+                if (code !== 0) {
+                  reject(new Error(`Process exited with code ${code}`));
+                } else {
+                  resolve('Process completed successfully');
+                }
+              },
+              onError: (err: Error) => {
+                reject(err);
+              }
+            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem=' + path]);
+            process.stdin?.write(`${rootPassword}\n`);
+            process.stdin?.end();
+          });
+          event.log(`Overrided Wine to allow access to the installation directory using "${path}"`);
         } catch (err) {
           event.fail("Failed to apply flatpak override. Please check your permissions.");
           return;
@@ -383,10 +404,27 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         let forceStop = false;
         if (wineSource === 'flatpak') {
           try {
-            await new Promise<string>((resolve, reject) => {
-              const result = execSync('flatpak --env="WINEPREFIX=' + winePrefixDir + '" run org.winehq.Wine setup.exe', { cwd: path });
-              resolve(result.toString());
-            })
+            await new Promise<string>((resolve, reject) =>
+              spawnAndHook({
+                cwd: path,
+                stdout: (data: string) => {
+                  event.log(data);
+                },
+                stderr: (data: string) => {
+                  event.log(data);
+                },
+                onClose: (code: number) => {
+                  if (code === 0) {
+                    resolve('Process completed successfully');
+                  } else {
+                    reject(new Error(`Process exited with code ${code}`));
+                  }
+                },
+                onError: (err: Error) => {
+                  reject(err);
+                }
+              }, 'flatpak', ['--env=WINEPREFIX=' + winePrefixDir, 'run', 'org.winehq.Wine', 'setup.exe'])
+            );
           } catch (err) {
             event.log(`Error opening setup.exe: ${err}`);
             event.fail('Error opening setup.exe. Check if wine is installed in "' + wineSource + '" and if it is, try again.');
