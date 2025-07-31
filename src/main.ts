@@ -275,7 +275,6 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
       let rootPassword: string | undefined;
       let sudoSuccess = false;
-      const escapedPath = path.replace(/[\\$`"'(){}[\]|;&<>*?~^#%@!\-]/g, '\\$&');
 
       // Only needed for flatpak, but we want to check sudo password validity
       if (wineSource === 'flatpak') {
@@ -325,9 +324,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
               onError: (err: Error) => {
                 reject(err);
               }
-            }, 'echo', ['-e', `${rootPassword}\\n`, '|', 'sudo', '-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem="' + escapedPath + '"']);
+            }, 'echo', ['-e', `${rootPassword}\\n`, '|', 'sudo', '-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem="' + path + '"']);
           });
-          event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
+          event.log(`Overrided Wine to allow access to the installation directory using "${path}"`);
         } catch (err) {
           event.fail("Failed to apply flatpak override. Please check your permissions.");
           return;
