@@ -113,10 +113,11 @@ function spawnAndHook(options: {
   stderr?: (data: string) => void,
   onClose?: (code: number) => void,
   onError?: (err: Error) => void,
+  rootPassword?: string,
   cwd?: string,
 }, command: Parameters<typeof spawn>[0], args: Parameters<typeof spawn>[1]) {
   const spawnOptions = options.cwd ? { cwd: options.cwd } : {};
-  console.log('running: ' + command + ' ' + args.join(' '));
+  console.log('running: ' + command.replace(options.rootPassword ?? '<rootPassword_insertion_ogi_addon_system>', '<root password>') + ' ' + args.join(' '));
   const childProcess = spawn(command, args, spawnOptions);
   let stdout = '';
   let stderr = '';
@@ -126,7 +127,7 @@ function spawnAndHook(options: {
       const dataStr = data.toString();
       stdout += dataStr;
       if (options.stdout) {
-        options.stdout(dataStr);
+        options.stdout(dataStr.replace(options.rootPassword ?? '<rootPassword_insertion_ogi_addon_system>', '<root password>'));
       }
     });
   }
@@ -157,7 +158,7 @@ function spawnAndHook(options: {
     process: childProcess,
     stdout,
     stderr,
-    stdin: childProcess.stdin
+    stdin: childProcess.stdin,
   }
 }
 addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
@@ -204,7 +205,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
               onError: (err: Error) => {
                 console.error('FLATPAK ERROR:', err);
                 event.fail('Error installing wine in flatpak. Please install it manually and try again.');
-              }
+              },
             }, 'flatpak', [
               'install', '--system', '-y', 'flathub', 'org.winehq.Wine/x86_64/stable-24.08'
             ]);
@@ -324,7 +325,8 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
               },
               onError: (err: Error) => {
                 reject(err);
-              }
+              },
+              rootPassword: rootPassword
             }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem=' + path]);
             process.stdin?.write(`${rootPassword}\n`);
             process.stdin?.end();
