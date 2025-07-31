@@ -275,7 +275,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
       let rootPassword: string | undefined;
       let sudoSuccess = false;
-      const escapedPath = path.replace(/[:\/\\&!]/g, '\\$&');
+      const escapedPath = path.replace(/[\\$`"'(){}[\]|;&<>*?~^#%@!]/g, '\\$&');
 
       // Only needed for flatpak, but we want to check sudo password validity
       if (wineSource === 'flatpak') {
