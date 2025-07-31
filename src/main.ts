@@ -384,8 +384,27 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         if (wineSource === 'flatpak') {
           try {
             await new Promise<string>((resolve, reject) => {
-              const result = execSync('flatpak --env="WINEPREFIX=' + winePrefixDir + '" run org.winehq.Wine setup.exe', { cwd: path });
-              resolve(result.toString());
+              const child = spawn('flatpak', ['--env=WINEPREFIX=' + winePrefixDir, 'run', 'org.winehq.Wine', 'setup.exe'], { cwd: path });
+              
+              child.stdout.on('data', (data) => {
+                event.log(data.toString());
+              });
+              
+              child.stderr.on('data', (data) => {
+                event.log(data.toString());
+              });
+              
+              child.on('close', (code) => {
+                if (code === 0) {
+                  resolve('Process completed successfully');
+                } else {
+                  reject(new Error(`Process exited with code ${code}`));
+                }
+              });
+              
+              child.on('error', (err) => {
+                reject(err);
+              });
             })
           } catch (err) {
             event.log(`Error opening setup.exe: ${err}`);
