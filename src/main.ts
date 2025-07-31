@@ -272,19 +272,47 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     // add a directory to the path called 'INSTALL HERE'
     if (process.platform === 'linux') {
       fs.mkdirSync(join(path, 'INSTALL HERE'), { recursive: true });
-      // ask for the root password
-      let rootPassword = (await event.askForInput("FitGirl Repacks", "Please enter your root password", new ConfigurationBuilder()
-        .addStringOption(option => option.setName('rootPassword').setDisplayName('Root Password').setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.').setInputType('password')
-        ))).rootPassword as string;
 
-      // gonna test this too see if it works without it
-      // execSync(`echo -e "${rootPassword}\n" | sudo -S sysctl -w vm.mmap_min_addr=0`);
-      // event.log(`Applied patch to allow Wine to launch`);
+      let rootPassword: string | undefined;
+      let sudoSuccess = false;
+      const escapedPath = path.replace(/[:\/\\&!]/g, '\\$&');
+
+      // Only needed for flatpak, but we want to check sudo password validity
       if (wineSource === 'flatpak') {
-        // make path work inside of a command line
-        const escapedPath = path.replace(/[:\/\\&!]/g, '\\$&');
-        execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${escapedPath}"`);
-        event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
+        while (!sudoSuccess) {
+          rootPassword = (await event.askForInput(
+            "FitGirl Repacks",
+            sudoSuccess === false && rootPassword !== undefined
+              ? "Incorrect password. Please enter your root password again"
+              : "Please enter your root password",
+            new ConfigurationBuilder()
+              .addStringOption(option =>
+                option
+                  .setName('rootPassword')
+                  .setDisplayName('Root Password')
+                  .setDescription('We need this in order to apply a patch so Wine can launch. We don\'t do anything else after that.')
+                  .setInputType('password')
+              )
+          )).rootPassword as string;
+
+          try {
+            // Try to run a harmless sudo command to check password
+            execSync(`echo -e "${rootPassword}\n" | sudo -S -k true`, { stdio: 'ignore' });
+            // If no error, password is correct
+            sudoSuccess = true;
+          } catch (err) {
+            sudoSuccess = false;
+          }
+        }
+
+        // Now apply the flatpak override
+        try {
+          execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${escapedPath}"`);
+          event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
+        } catch (err) {
+          event.fail("Failed to apply flatpak override. Please check your permissions.");
+          return;
+        }
       }
     }
     if (input.automate) {
@@ -319,7 +347,12 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     else {
       event.log(`Opening setup.exe`);
       if (process.platform === 'win32') {
-        execSync(`"${setupPath}"`, { cwd: path });
+        try {
+          execSync(`"${setupPath}"`, { cwd: path });
+        } catch (err) {
+          event.fail('Error opening setup.exe. It\'s possible that Windows quarantined the file. Please try again.');
+          return;
+        }
       }
       else if (process.platform === 'linux') {
         let acknowledged = false
