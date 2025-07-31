@@ -307,7 +307,32 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
         // Now apply the flatpak override
         try {
-          execSync(`echo -e "${rootPassword}\n" | sudo -S flatpak override org.winehq.Wine --filesystem="${escapedPath}"`);
+          await new Promise<string>((resolve, reject) => {
+            const process = spawnAndHook({
+              stdout: (data: string) => {
+                event.log(data);
+              },
+              stderr: (data: string) => {
+                event.log(data);
+              },
+              onClose: (code: number) => {
+                if (code !== 0) {
+                  reject(new Error(`Process exited with code ${code}`));
+                } else {
+                  resolve('Process completed successfully');
+                }
+              },
+              onError: (err: Error) => {
+                reject(err);
+              }
+            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem="' + escapedPath + '"']);
+            
+            // Send the password to sudo stdin
+            if (process.process.stdin) {
+              process.process.stdin.write(rootPassword + '\n');
+              process.process.stdin.end();
+            }
+          });
           event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
         } catch (err) {
           event.fail("Failed to apply flatpak override. Please check your permissions.");
@@ -383,29 +408,27 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         let forceStop = false;
         if (wineSource === 'flatpak') {
           try {
-            await new Promise<string>((resolve, reject) => {
-              const child = spawn('flatpak', ['--env=WINEPREFIX=' + winePrefixDir, 'run', 'org.winehq.Wine', 'setup.exe'], { cwd: path });
-              
-              child.stdout.on('data', (data) => {
-                event.log(data.toString());
-              });
-              
-              child.stderr.on('data', (data) => {
-                event.log(data.toString());
-              });
-              
-              child.on('close', (code) => {
-                if (code === 0) {
-                  resolve('Process completed successfully');
-                } else {
-                  reject(new Error(`Process exited with code ${code}`));
+            await new Promise<string>((resolve, reject) =>
+              spawnAndHook({
+                cwd: path,
+                stdout: (data: string) => {
+                  event.log(data);
+                },
+                stderr: (data: string) => {
+                  event.log(data);
+                },
+                onClose: (code: number) => {
+                  if (code === 0) {
+                    resolve('Process completed successfully');
+                  } else {
+                    reject(new Error(`Process exited with code ${code}`));
+                  }
+                },
+                onError: (err: Error) => {
+                  reject(err);
                 }
-              });
-              
-              child.on('error', (err) => {
-                reject(err);
-              });
-            })
+              }, 'flatpak', ['--env=WINEPREFIX=' + winePrefixDir, 'run', 'org.winehq.Wine', 'setup.exe'])
+            );
           } catch (err) {
             event.log(`Error opening setup.exe: ${err}`);
             event.fail('Error opening setup.exe. Check if wine is installed in "' + wineSource + '" and if it is, try again.');
