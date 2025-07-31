@@ -319,7 +319,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     else {
       event.log(`Opening setup.exe`);
       if (process.platform === 'win32') {
-        execSync(`${setupPath}`, { cwd: path });
+        execSync(`"${setupPath}"`, { cwd: path });
       }
       else if (process.platform === 'linux') {
         let acknowledged = false
