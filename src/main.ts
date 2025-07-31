@@ -325,13 +325,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
               onError: (err: Error) => {
                 reject(err);
               }
-            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem="' + escapedPath + '"']);
-            
-            // Send the password to sudo stdin
-            if (process.process.stdin) {
-              process.process.stdin.write(rootPassword + '\n');
-              process.process.stdin.end();
-            }
+            }, 'echo', ['-e', `${rootPassword}\\n`, '|', 'sudo', '-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem="' + escapedPath + '"']);
           });
           event.log(`Overrided Wine to allow access to the installation directory using "${escapedPath}"`);
         } catch (err) {
