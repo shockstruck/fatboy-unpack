@@ -4,9 +4,11 @@ import axios from "axios";
 import { JSDOM } from "jsdom";
 import crypto from 'crypto'
 import { exec, execSync, spawn } from "child_process";
-import { scrapeHer, shouldScrape } from "./scraper";
+import { scrapeHer, shouldScrape, axiosGetWithDDOSGuard, updateCookieString, getCookieString } from "./scraper";
 import { join } from "path";
+import { solveDDOSGuard } from "./ddosguard";
 
+// Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
   author: "Fat-Addons",
   description: "A FitGirl Repack scraper.",
@@ -541,7 +543,37 @@ addon.on('exit', () => {
 
 addon.on('connect', async () => {
   // detect firstly if we can access fitigrl
-  const response = await axios.get('https://fitgirl-repacks.site/');
+  await new Promise<void>(async (resolve) => {
+    axios.get('https://fitgirl-repacks.site/', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    }).then(async (response) => {
+      resolve();
+    }).catch(async (err) => {
+      // solve ddos guard
+      let task = await addon.task();
+      addon.notify({
+        id: 'fatboy-unpack-ddos-guard',
+        message: 'Solving DDOS Guard. This may take a while...',
+        type: 'info'
+      })
+      const cookieString = await solveDDOSGuard(addon, 'https://fitgirl-repacks.site/', task);
+      if (cookieString) {
+        // set the cookie
+        updateCookieString(cookieString);
+        task.log('DDOS Guard successfully solved');
+        task.finish();
+        addon.notify({
+          id: 'fatboy-unpack-ddos-guard',
+          message: 'DDOS Guard successfully solved',
+          type: 'success'
+        })
+        resolve();
+      }
+    });
+  });
+
   new Promise<void>(async (resolve) => {
     let task = await addon.task();
     task.log('Checking if scrape is valid...');
@@ -552,7 +584,7 @@ addon.on('connect', async () => {
         type: 'info'
       });
       task.log('Scraping FitGirl...');
-      await scrapeHer(task);
+      await scrapeHer(addon, task);
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
       search.addItems(scrapedGames!!);
       task.log('FitGirl Repacks scraped games loaded');
@@ -580,7 +612,7 @@ addon.on('connect', async () => {
         type: 'info'
       });
       task.log('Scraping FitGirl...');
-      await scrapeHer(task);
+      await scrapeHer(addon, task);
 
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
       search.addItems(scrapedGames!!);
@@ -606,7 +638,7 @@ async function scrapeGameMetadata(game: Game, hash: string) {
   if (fs.existsSync(`./repack-data-scrapes/${hash}.json`)) {
     return JSON.parse(fs.readFileSync(`./repack-data-scrapes/${hash}.json`, 'utf-8')) as GameInfo;
   }
-  const response = await axios.get(game.url);
+  const response = await axiosGetWithDDOSGuard(addon, game.url, {});
   const dom = new JSDOM(response.data);
   const document = dom.window.document;
 
@@ -634,7 +666,6 @@ async function scrapeGameMetadata(game: Game, hash: string) {
     const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => (h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors')) && !h3.textContent!!.includes('Direct Links'));
     if (downloadMirrorsHeader) {
       const links = downloadMirrorsHeader.nextElementSibling!!.querySelectorAll('a[href*="magnet:?"]');
-      console.log(links)
       links.forEach(link => {
         const previous = link.parentElement!!.querySelector("a[target=_blank]")
         if (previous && previous.textContent === "1337x") {
