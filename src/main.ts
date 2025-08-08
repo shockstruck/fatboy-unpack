@@ -42,7 +42,13 @@ addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
 )
 
-addon.on('search', ({ appID, storefront }, event) => {
+addon.on('search', ({ appID, storefront, for: searchType }, event) => {
+  if (searchType === 'task') {
+    event.defer();
+    event.resolve([]);
+    return;
+  }
+
   if (scrapedGames === undefined) {
     event.defer();
     addon.notify({
@@ -526,11 +532,51 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     )
 
     // exec(setupPath)
+    // check if the working directory contains unity. if it does, then no need to run any dependencies
+    // check the files in the working directory folder and if one of the names contains "unityplayer.dll" then no need to run any dependencies
+    const workingDir = gameExecutable.workingDir as string;
+    const files = fs.readdirSync(workingDir);
+    let hasUnity = false;
+    if (files.some(file => file.toLowerCase().includes('unityplayer.dll'))) {
+      hasUnity = true;
+    }
+    
+    let redistributables: { name: string, path: string }[] = [];
+
+    if (!hasUnity && process.platform === 'linux') {
+      // ask if the user wants to install the redistributables
+      const installRedistributables = await event.askForInput("FitGirl Repacks", "Do you want to install the redistributables? This will automatically run winetricks and create a Wine prefix for you.", new ConfigurationBuilder()
+        .addBooleanOption(option => option
+          .setName('installRedistributables')
+          .setDisplayName('Install Redistributables')
+          .setDescription('Install the redistributables needed for the game.')
+          .setDefaultValue(true)
+        )
+      ) as { installRedistributables: boolean };
+      if (installRedistributables.installRedistributables) {
+        // most redistributables above are what's needed for most games.
+        redistributables.push({
+          name: 'vcrun2015',
+          path: 'winetricks'
+        });
+        redistributables.push({
+          name: 'vcrun2019',
+          path: 'winetricks'
+        });
+        redistributables.push({
+          name: 'dotnet48',
+          path: 'winetricks'
+        });
+      }
+    }
+
+
     event.resolve({
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
       version: '1.0.0',
-      launchArguments: ''
+      launchArguments: '',
+      redistributables
     })
     resolve();
   });
