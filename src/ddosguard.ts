@@ -159,7 +159,7 @@ async function testDDOSGuardSolution(url: string, cookieString: string, userAgen
 }
 
 async function handleDDOSGuardSolution(browser: Browser, page: Page, url: string, task: CustomTask): Promise<string | null> {
-  const maxRetries = 3;
+  const maxRetries = 3; 
   let retryCount = 0;
   
   while (retryCount < maxRetries) {
@@ -328,7 +328,7 @@ export async function solveDDOSGuard(addon: OGIAddon, url: string, task: CustomT
     }
   }
 
-  const maxRetries = 3;
+  const maxRetries = 2; // Reduced from 3 to 2 since axiosGetWithDDOSGuard also retries
   let retryCount = 0;
   
   while (retryCount < maxRetries) {

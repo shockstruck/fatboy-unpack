@@ -7,6 +7,7 @@ import { exec, execSync, spawn } from "child_process";
 import { scrapeHer, shouldScrape, axiosGetWithDDOSGuard, updateCookieString, getCookieString } from "./scraper";
 import { join } from "path";
 import { solveDDOSGuard } from "./ddosguard";
+import { catchDownload } from "./download";
 
 // Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
@@ -29,7 +30,8 @@ type GameInfo = {
   magnetLink: string,
   torrentLinks: string[],
   coverImage: string,
-  steamAppId?: string
+  steamAppId?: string,
+  directLinks: { service: string, links: { name: string, url: string }[] }[]
 }
 
 let scrapedGames: Game[] | undefined = undefined;
@@ -60,19 +62,8 @@ addon.on('search', ({ appID, storefront, for: searchType }, event) => {
     return;
   }
 
-  addon.notify({
-    message: 'Searching for game...',
-    id: 'fatboy-unpack-searching',
-    type: 'info'
-  })
   event.defer(async () => {
     console.log('should be deferred')
-    let results: GameInfo[] = [];
-    addon.notify({
-      message: `Getting game details... ${appID} ${storefront}`,
-      id: 'fatboy-unpack-getting-game-details',
-      type: 'info'
-    })
     const game = await addon.getAppDetails(appID, storefront);
     if (!game) {
       event.resolve([]);
@@ -85,32 +76,36 @@ addon.on('search', ({ appID, storefront, for: searchType }, event) => {
       return;
     }
     
-    addon.notify({
-      message: `Found variant from FitGirl: ${fitGame[0].name}`,
-      id: 'fatboy-unpack-game-found',
-      type: 'info'
-    });
     const gameMetaData = await scrapeGameMetadata(fitGame[0], generateHash(game.name));
-
-    if (gameMetaData) {
-      results.push(gameMetaData);
+    let results: Parameters<typeof event.resolve>[0] = [];
+    
+    // direct service - FuckingFast 
+    console.log('direct services', gameMetaData.directLinks);
+    if (gameMetaData.directLinks && gameMetaData.directLinks.some(directLink => directLink.service === 'FuckingFast')) {
+      const links = gameMetaData.directLinks.find(directLink => directLink.service === 'FuckingFast')?.links ?? [];
+      results.push({
+        name: 'FuckingFast | ' + gameMetaData.name,
+        downloadType: 'request',
+        manifest: {
+          service: 'FuckingFast',
+          links: links.map(link => ({
+            name: link.name,
+            url: link.url
+          }))
+        }
+      })
     }
 
-    // turn GameInfo into search result
-    const searchResults: SearchResult[] = results.map((game: GameInfo) => {
-      return {
-        coverURL: game.coverImage,
-        description: game.company ? `Made By: ${game.company}` : 'No company information available',
-        downloadSize: 0,
+    // magnet link - 1337x
+    if (gameMetaData.magnetLink) {
+      results.push({
+        name: '1337x | ' + gameMetaData.name,
         downloadType: 'magnet',
-        name: game.name,
-        downloadURL: game.magnetLink,
+        downloadURL: gameMetaData.magnetLink,
         filename: generateHash(game.name),
-        appID: appID,
-        storefront: 'steam',
-      }
-    });
-    event.resolve(searchResults);
+      })
+    }
+    event.resolve(results);
   });
 
 
@@ -173,11 +168,61 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   const wineSource = addon.config.getStringValue('whereToWine') || 'flatpak';
   event.defer();
   event.log("Setting up fitgirl game...");
-  // get the path and open setup.exe
-
   // check if wine is instaleld in that source by running the help command check if it fails 
 
   new Promise<void>(async (resolve) => {
+  // this was a direct download, we need to multipart unrar these files
+    event.log(type);
+    if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
+      for (const part of multiPartFiles) {
+        const filePath = join(path, part.name);
+        if (process.platform === 'linux' || process.platform === 'darwin') {
+          await new Promise<void>((resolve) => {
+            const unrar = spawn('unrar', ['x', filePath, path, '-kb', '-y'], { stdio: 'inherit' });
+            unrar.stdout?.on('data', (data) => {
+              event.log(data.toString());
+            });
+            unrar.stderr?.on('data', (data) => {
+              event.log(data.toString());
+            });
+            unrar.on('close', (code) => {
+              event.log(`Unrar completed for ${part.name} with code ${code}`);
+              resolve();
+            });
+          });
+        } else {
+          // on windows use C:\Program Files\7-Zip\7z.exe
+          await new Promise<void>((resolve) => {
+            const unrar = spawn('C:\\Program Files\\7-Zip\\7z.exe', ['x', filePath, path, '-y'], { stdio: 'inherit' });
+            unrar.stdout?.on('data', (data: Buffer) => {
+              event.log(data.toString());
+            });
+            unrar.stderr?.on('data', (data) => {
+              event.log(data.toString());
+            });
+            unrar.on('close', (code) => {
+              event.log(`Unrar completed for ${part.name} with code ${code}`);
+              resolve();
+            });
+          });
+        }
+      }
+
+      // now delete the rar files
+      event.log('Deleting rar files..');
+      for (const part of multiPartFiles) {
+        const filePath = join(path, part.name);
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            event.log(`Deleted archive file: ${part.name}`);
+          }
+        } catch (err) {
+          event.log(`Failed to delete archive file ${part.name}: ${err}`);
+        }
+      }
+    }
+
     let hasWine = process.platform === 'win32' ? true : false;
     const homeDir = process.env.HOME || process.env.USERPROFILE || '~/';
     const winePrefixDir = join(homeDir, '.wine-fitgirl');
@@ -256,7 +301,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     if (process.platform !== 'linux') {
       const screen = new ConfigurationBuilder()
         .addBooleanOption(option => option.setName("automate").setDisplayName("Automate Setup").setDescription("Automate the setup process (If on linux, we recommend doing it by yourself.)").setDefaultValue(true))
-        .addStringOption(option => option.setName("installDir").setDisplayName("Installation Directory").setDescription("The directory where the game will be installed").setInputType('folder'))
+        .addStringOption(option => option.setName("installDir").setDisplayName("Game Installation Directory").setDescription("Choose where you want to install the game (this should be different from where the setup files are located)").setDefaultValue(path).setInputType('folder'))
 
       if (fs.existsSync(join(path, 'fg-optional-bonus-content.bin'))) {
         screen.addBooleanOption(option => option.setName("addBonus").setDisplayName("Add Bonus Content").setDescription("Add the optional bonus content to the installation"))
@@ -267,21 +312,36 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         addBonus: boolean
       }
     } else {
+      // On Linux, we need to get the installation directory from the user
+      // The 'path' parameter already contains the setup.exe location
+      if (!fs.existsSync(join(path, 'setup.exe'))) {
+        event.fail('Error: setup.exe not found in the download directory. Please ensure the download is complete.');
+        return;
+      }
+      
+      const screen = new ConfigurationBuilder()
+        .addStringOption(option => option.setName("installDir").setDisplayName("Game Installation Directory").setDescription("Choose where you want to install the game (this should be different from where the setup files are located)").setDefaultValue(path).setInputType('folder'))
+
+      const byUser = await event.askForInput("FitGirl Repacks", "Setup your FitGirl Repack", screen) as {
+        installDir: string
+      }
+      
       input = {
         automate: false,
-        installDir: path,
+        installDir: byUser.installDir,
         addBonus: false
       }
     }
 
     const setupPath = join(path, 'setup.exe');
+    
     let installDir = input.installDir as string;
     const addBonus = input.addBonus as boolean ?? false;
     const setupINF = makeSetupINF(installDir, addBonus);
 
     // add a directory to the path called 'INSTALL HERE'
     if (process.platform === 'linux') {
-      fs.mkdirSync(join(path, 'INSTALL HERE'), { recursive: true });
+      fs.mkdirSync(join(installDir, 'INSTALL HERE'), { recursive: true });
 
       let rootPassword: string | undefined;
       let sudoSuccess = false;
@@ -335,11 +395,11 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
                 reject(err);
               },
               rootPassword: rootPassword
-            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem=' + path]);
+            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem=' + installDir]);
             process.stdin?.write(`${rootPassword}\n`);
             process.stdin?.end();
           });
-          event.log(`Overrided Wine to allow access to the installation directory using "${path}"`);
+          event.log(`Overrided Wine to allow access to the installation directory using "${installDir}"`);
         } catch (err) {
           event.fail("Failed to apply flatpak override. Please check your permissions.");
           return;
@@ -347,8 +407,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
     }
     if (input.automate) {
-      fs.writeFileSync(`${path}\\fatboy-setup.inf`, setupINF);
-      event.log(`Setup INI file created at ${path}\\fatboy-setup.inf`);
+      const setupINFPath = join(path, 'fatboy-setup.inf');
+      fs.writeFileSync(setupINFPath, setupINF);
+      event.log(`Setup INI file created at ${setupINFPath}`);
       event.log(`Opening setup.exe with INI file`);
       if (process.platform === 'win32') {
         execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, { cwd: path });
@@ -388,7 +449,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       else if (process.platform === 'linux') {
         let acknowledged = false
         while (!acknowledged) {
-          let acknowledge = await event.askForInput("FitGirl Repacks", "Before we launch the setup, it's important to know that when you are selecting the destination location, you MUST use the Z drive (even if you are using an SD Card). If you are using an SD Card, go to Z:\\" + path.replaceAll('/', '\\') + "\\INSTALL HERE", new ConfigurationBuilder()
+          let acknowledge = await event.askForInput("FitGirl Repacks", "Before we launch the setup, it's important to know that when you are selecting the destination location, you MUST use the Z drive (even if you are using an SD Card). If you are using an SD Card, go to Z:\\" + installDir.replaceAll('/', '\\') + "\\INSTALL HERE", new ConfigurationBuilder()
             .addBooleanOption(option => option
               .setDisplayName('I Understand')
               .setName('understood')
@@ -460,9 +521,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
         // delete all other files and folders in the path except the 'INSTALL HERE' directory        
         event.log(`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`);
-        fs.readdirSync(path).forEach(file => {
+        fs.readdirSync(installDir).forEach(file => {
           if (file !== 'INSTALL HERE') {
-            const fullPath = join(path, file);
+            const fullPath = join(installDir, file);
             const stat = fs.lstatSync(fullPath);
             if (stat.isDirectory()) {
               fs.rmSync(fullPath, { recursive: true, force: true });
@@ -474,8 +535,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         event.log('Deleted.');
 
         // move the contents of 'INSTALL HERE' directory to the path
-        installDir = path;
-        const installHereDir = join(path, 'INSTALL HERE');
+        const installHereDir = join(installDir, 'INSTALL HERE');
         
         if (fs.existsSync(installHereDir)) {
           // Check if there's content in INSTALL HERE
@@ -514,22 +574,92 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
     }
 
+    // Function to find executable files in a directory
+    function findExecutableFiles(directory: string): string[] {
+      if (!fs.existsSync(directory)) {
+        return [];
+      }
+      
+      const files = fs.readdirSync(directory);
+      const executableExtensions = ['.exe', '.bat', '.cmd'];
+      const excludePatterns = [
+        /unitycrash/i,
+        /crash.*report/i,
+        /error.*report/i,
+        /setup/i,
+        /install/i,
+        /uninstall/i,
+        /redist/i,
+        /vcredist/i,
+        /directx/i,
+        /_commonredist/i,
+        /updater/i,
+        /launcher.*update/i,
+        /^steam_/i
+      ];
+      
+      return files.filter(file => {
+        const filePath = join(directory, file);
+        const stats = fs.statSync(filePath);
+        
+        // Skip directories
+        if (stats.isDirectory()) {
+          return false;
+        }
+        
+        // Check if it has an executable extension
+        const hasExeExtension = executableExtensions.some(ext => 
+          file.toLowerCase().endsWith(ext)
+        );
+        
+        if (!hasExeExtension) {
+          return false;
+        }
+        
+        // Exclude unwanted files
+        const shouldExclude = excludePatterns.some(pattern => 
+          pattern.test(file)
+        );
+        
+        return !shouldExclude;
+      }).map(file => join(directory, file));
+    }
 
-    const gameExecutable = await event.askForInput("FitGirl Repacks", "Help us help you.", new ConfigurationBuilder()
-      .addStringOption(option => option
-        .setName('workingDir')
-        .setDisplayName('Working Directory')
-        .setDescription('Go to the directory: ' + (installDir ?? '(where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
-        .setInputType('folder')
-        .setDefaultValue(installDir)
-      )
-      .addStringOption(option => option
-        .setName("gameExecutable")
-        .setDisplayName("Game Executable")
-        .setDescription("Go to the directory: " + (installDir ?? '(where you installed it)') + " and select the game executable.")
-        .setInputType('file')
-      )
-    )
+    // Try to auto-detect the executable first
+    const potentialExecutables = findExecutableFiles(installDir);
+    let gameExecutable: { workingDir: string; gameExecutable: string };
+
+    if (potentialExecutables.length === 1) {
+      // Auto-select the single executable found
+      event.log(`Auto-detected game executable: ${potentialExecutables[0]}`);
+      gameExecutable = {
+        workingDir: installDir,
+        gameExecutable: potentialExecutables[0]
+      };
+    } else {
+      // Ask user to select manually
+      if (potentialExecutables.length === 0) {
+        event.log('No executable files found automatically. Please select manually.');
+      } else {
+        event.log(`Found ${potentialExecutables.length} potential executables. Please select manually.`);
+      }
+      
+      gameExecutable = await event.askForInput("FitGirl Repacks", "Help us help you.", new ConfigurationBuilder()
+        .addStringOption(option => option
+          .setName('workingDir')
+          .setDisplayName('Working Directory')
+          .setDescription('Go to the directory: ' + (installDir ?? '(where you installed it)') + ' and select the working directory. (usually where the game executable is located)')
+          .setInputType('folder')
+          .setDefaultValue(installDir)
+        )
+        .addStringOption(option => option
+          .setName("gameExecutable")
+          .setDisplayName("Game Executable")
+          .setDescription("Go to the directory: " + (installDir ?? '(where you installed it)') + " and select the game executable.")
+          .setInputType('file')
+        )
+      ) as { workingDir: string; gameExecutable: string };
+    }
 
     // exec(setupPath)
     // check if the working directory contains unity. if it does, then no need to run any dependencies
@@ -570,6 +700,11 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
     }
 
+    // write a file steam_appid.txt in the installDir with the steamAppId if it doesn't exist
+    if (!fs.existsSync(join(installDir, 'steam_appid.txt'))) {
+      fs.writeFileSync(join(installDir, 'steam_appid.txt'), appID.toString());
+    }
+
 
     event.resolve({
       cwd: gameExecutable.workingDir as string,
@@ -581,7 +716,58 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     resolve();
   });
 
-})
+});
+
+addon.on('request-dl', (appID, info, event) => {
+  event.defer(async () => {
+    if (!info.manifest) {
+      event.fail('No manifest found');
+      return;
+    }
+    if (info.manifest.service === 'FuckingFast') {
+      const links = info.manifest.links;
+      let foundLinks: string[] = [];
+      for (const link of links) {
+        let tries = 0;
+        while (tries < 3) {
+          try {
+            const downloadURL = await catchDownload(link.url, '.link-button.gay-button');
+            if (downloadURL) {
+              foundLinks.push(downloadURL);
+              addon.notify({
+                message: 'Found link (' + (links.indexOf(link) + 1) + '/' + links.length + ') for ' + info.name,
+                id: 'fatboy-unpack-download-link-found',
+                type: 'success'
+              });
+              break;
+            }
+          } catch (err) {
+            console.error('Error downloading from FuckingFast', err);
+          }
+          tries++;
+        }
+
+        if (tries === 3) {
+          event.fail('Failed to find download link from FuckingFast');
+          return;
+        }
+      }
+      if (foundLinks.length === 0) {
+        event.fail('No links found');
+        return;
+      }
+      event.resolve({
+        name: 'FuckingFast | ' + info.name,
+        downloadType: 'direct',
+        files: foundLinks.map((link, ind) => ({
+          name: 'part' + ind + '.rar',
+          downloadURL: link
+        }))
+      });
+    }
+  });
+  
+});
 
 addon.on('exit', () => {
   process.exit(0);
@@ -680,57 +866,88 @@ function generateHash(str: string) {
     digest('hex');
 }
 
-async function scrapeGameMetadata(game: Game, hash: string) {
-  if (fs.existsSync(`./repack-data-scrapes/${hash}.json`)) {
-    return JSON.parse(fs.readFileSync(`./repack-data-scrapes/${hash}.json`, 'utf-8')) as GameInfo;
+export async function scrapeGameMetadata(game: Game, hash: string): Promise<GameInfo> {
+  const cachePath = `./repack-data-scrapes/${hash}.json`;
+
+  if (fs.existsSync(cachePath)) {
+    return JSON.parse(fs.readFileSync(cachePath, "utf-8")) as GameInfo;
   }
+
   const response = await axiosGetWithDDOSGuard(addon, game.url, {});
   const dom = new JSDOM(response.data);
   const document = dom.window.document;
 
-  // Initialize an array to hold the data
-  let data: GameInfo | undefined = undefined;
+  let data: GameInfo = {
+    name: game.name,
+    company: "",
+    coverImage: "",
+    magnetLink: "",
+    torrentLinks: [],
+    directLinks: [] // now structured by service
+  };
 
-  // Loop through each element with class 'entry-content'
-  document.querySelectorAll('.entry-content').forEach(element => {
-    // Get the company name
-    let company = '';
-    const companyMatch = element.textContent!!.match(/Companies:\s*(.*?)\s*Languages:/);
-    if (companyMatch) {
-      company = companyMatch[1].trim();
-    }
+  const entry = document.querySelector(".entry-content");
+  if (entry) {
+    // Company
+    const companyMatch = entry.textContent?.match(/Company:\s*(.*?)\s*Languages:/);
+    if (companyMatch) data.company = companyMatch[1].trim();
 
-    // Get the cover image
-    let coverImage = '';
-    const imgElement = element.querySelector('img');
-    if (imgElement) {
-      coverImage = imgElement.src;
-    }
+    // Cover image
+    const imgElement = entry.querySelector("img");
+    if (imgElement) data.coverImage = imgElement.getAttribute("src") ?? "";
 
-    // Get the magnet link under "Download Mirrors (Torrent)" from 1337x
-    let magnetLink = '';
-    const downloadMirrorsHeader = Array.from(element.querySelectorAll('h3')).find(h3 => (h3.textContent!!.includes('Download Mirrors (Torrent)') || h3.textContent!!.includes('Download Mirrors')) && !h3.textContent!!.includes('Direct Links'));
-    if (downloadMirrorsHeader) {
-      const links = downloadMirrorsHeader.nextElementSibling!!.querySelectorAll('a[href*="magnet:?"]');
+    // Torrent magnet link (1337x)
+    const torrentHeader = Array.from(entry.querySelectorAll("h3")).find(
+      h3 =>
+        (h3.textContent?.includes("Download Mirrors (Torrent)") ||
+          h3.textContent?.includes("Download Mirrors")) &&
+        !h3.textContent?.includes("Direct Links")
+    );
+    if (torrentHeader) {
+      const links = torrentHeader.nextElementSibling?.querySelectorAll('a[href*="magnet:?"]') ?? [];
       links.forEach(link => {
-        const previous = link.parentElement!!.querySelector("a[target=_blank]")
+        const previous = link.parentElement?.querySelector("a[target=_blank]");
         if (previous && previous.textContent === "1337x") {
-          magnetLink = link.getAttribute('href')!!;
+          data.magnetLink = link.getAttribute("href") ?? "";
         }
       });
     }
-    data = {
-      company,
-      coverImage,
-      magnetLink,
-      name: game.name,
-      torrentLinks: []
+
+    // Direct download links (grouped by filehoster)
+    const directHeader = Array.from(entry.querySelectorAll("h3")).find(h3 =>
+      h3.textContent?.includes("Download Mirrors (Direct Links)")
+    );
+    console.log('directHeader', directHeader);
+    if (directHeader) {
+      const hosters = directHeader.nextElementSibling?.nextElementSibling?.querySelectorAll("li");
+      console.log('hosters', hosters);
+      hosters?.forEach(li => {
+        const serviceAnchor = li.querySelector("a[href]");
+        if (!serviceAnchor) return;
+
+        const serviceMatch = serviceAnchor.textContent?.match(/Filehoster:\s*(.*)/);
+        const service = serviceMatch ? serviceMatch[1].trim() : "Unknown";
+
+        const spoilerContent = li.querySelector(".su-spoiler-content");
+        const links: { name: string; url: string }[] = [];
+
+        if (spoilerContent) {
+          spoilerContent.querySelectorAll("a[href]").forEach(a => {
+            const url = a.getAttribute("href") ?? "";
+            if (url.match(/\.(rar|zip|7z|iso|part\d+\.rar)$/i)) {
+              links.push({ name: a.textContent?.trim() ?? url, url });
+            }
+          });
+        }
+
+        data.directLinks.push({ service, links });
+      });
     }
-  });
+  }
 
-  fs.mkdirSync('./repack-data-scrapes', { recursive: true });
+  fs.mkdirSync("./repack-data-scrapes", { recursive: true });
+  fs.writeFileSync(cachePath, JSON.stringify(data, null, 2));
 
-  fs.writeFileSync(`./repack-data-scrapes/${hash}.json`, JSON.stringify(data, null, 2));
   return data;
 }
 
