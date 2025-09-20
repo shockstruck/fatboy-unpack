@@ -1,7 +1,6 @@
 import fs from 'fs';
 import { JSDOM } from 'jsdom';
 import axios from 'axios';
-import { setTimeout } from 'timers/promises';
 import OGIAddon, { CustomTask } from 'ogi-addon';
 import { solveDDOSGuard } from './ddosguard';
 
@@ -16,6 +15,18 @@ export function updateCookieString(cookieString: string) {
 // Function to get the current cookie string
 export function getCookieString(): string {
   return axiosCookieString;
+}
+
+// Helper function to determine if an error is worth retrying
+function isRetryableError(error: any): boolean {
+  // Don't retry on certain permanent errors
+  if (error.response?.status === 404) return false; // Not found
+  if (error.response?.status === 401) return false; // Unauthorized
+  if (error.response?.status === 410) return false; // Gone
+  if (error.code === 'ENOTFOUND') return false; // DNS resolution failed
+  
+  // Retry on 403 (DDoS guard), 5xx errors, timeouts, and connection issues
+  return true;
 }
 
 // Wrapper function for axios.get that handles 403 errors with DDoS guard
@@ -45,6 +56,11 @@ export async function axiosGetWithDDOSGuard(addon: OGIAddon, url: string, option
       return response;
     } catch (error: any) {
       lastError = error;
+      
+      // Check if this is a retryable error
+      if (!isRetryableError(error)) {
+        throw error;
+      }
       
       if (error.response?.status === 403 && retryCount < maxRetries - 1) {
         retryCount++;
@@ -86,10 +102,25 @@ export async function axiosGetWithDDOSGuard(addon: OGIAddon, url: string, option
             message: `Failed to solve DDoS guard after ${retryCount} attempts. The site may be experiencing issues.`,
             type: 'error'
           });
+          
+          // Continue to the next retry attempt instead of throwing immediately
+          continue;
         }
+      } else if (retryCount < maxRetries - 1) {
+        // Handle other retryable errors (5xx, timeouts, etc.)
+        retryCount++;
+        console.log(`Received retryable error (${error.response?.status || error.code}), retrying (attempt ${retryCount}/${maxRetries})`);
+        
+        if (task) {
+          task.log(`Retrying request due to ${error.response?.status || error.code} (attempt ${retryCount}/${maxRetries})`);
+        }
+
+        // Wait a bit before retrying
+        await new Promise<void>(resolve => setTimeout(resolve, 1000 * retryCount)); // Progressive backoff
+        continue;
       }
       
-      // If it's not a 403 or we've exhausted retries, throw the error
+      // If it's not retryable or we've exhausted retries, throw the error
       throw error;
     }
   }
@@ -217,4 +248,81 @@ export async function scrapeHer(addon: OGIAddon, task: CustomTask) {
   fs.writeFileSync('fit-scrape-search.json', JSON.stringify(games, null, 2));
   fs.writeFileSync('time-since-scrape.txt', Date.now().toString());
   console.log('Results have been saved to fit-scrape-search.json');
+}
+
+// this is a scraper for direct download pages
+export function directDownloadScraper(html: string) {
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+
+  // Selectors likely to contain the paste text/links
+  const pasteSelectors: string[] = [
+    "#plaintext",           // common in provided HTML
+    "#prettyprint",         // prettified content
+    "#prettymessage",       // container wrapper
+    "#message",             // textarea holding message (hidden sometimes)
+    "pre",                  // any pre blocks
+    ".paste, .paste-content" // generic fallbacks
+  ];
+
+  // Collect nodes to inspect
+  const nodes: Element[] = [];
+  pasteSelectors.forEach((sel) => {
+    doc.querySelectorAll(sel).forEach((n) => nodes.push(n));
+  });
+
+  // If we didn’t find paste-specific nodes, use the main element as fallback
+  if (nodes.length === 0) {
+    const main = doc.querySelector("main") || doc.body;
+    if (main) nodes.push(main);
+  }
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  // Helper to add URL preserving order and uniqueness
+  function pushUrl(url: string | null): void {
+    if (!url) return;
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+
+  // 1) Collect <a href="..."> values that appear inside selected nodes
+  nodes.forEach((node) => {
+    node.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
+      const href: string | null = a.getAttribute("href");
+      pushUrl(href);
+
+      // also consider link text if it looks like a URL
+      const text: string = a.textContent?.trim() ?? "";
+      if (text && text !== href) {
+        if (/^https?:\/\//i.test(text) || /^[\w-]+\.[\w.-]+\/?/.test(text)) {
+          pushUrl(text);
+        }
+      }
+    });
+  });
+
+  // 2) Extract bare URLs from text content of the nodes
+  const urlRegex = /\bhttps?:\/\/[^\s<>"'`)\]}]+/gi;
+  nodes.forEach((node) => {
+    const text = node.textContent ?? "";
+    let m: RegExpExecArray | null;
+    while ((m = urlRegex.exec(text)) !== null) {
+      pushUrl(m[0]);
+    }
+  });
+
+  // 3) Extra fallback: find any anchor anywhere in the document (if still empty)
+  if (out.length === 0) {
+    doc.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
+      pushUrl(a.getAttribute("href"));
+    });
+  }
+
+  return out;
 }
