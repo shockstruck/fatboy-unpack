@@ -174,9 +174,23 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   // this was a direct download, we need to multipart unrar these files
     event.log(type);
     if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
-      for (const part of multiPartFiles) {
-        const filePath = join(path, part.name);
-        if (process.platform === 'linux' || process.platform === 'darwin') {
+      if (process.platform === 'win32') {
+        await new Promise<void>((resolve) => {
+          const unrar = spawn('C:\\Program Files\\7-Zip\\7z.exe', ['x', join(path, multiPartFiles[0].name), '-o"' + path + '"'], { stdio: 'inherit' });
+          unrar.stdout?.on('data', (data: Buffer) => {
+            event.log(data.toString());
+          });
+          unrar.stderr?.on('data', (data) => {
+            event.log(data.toString());
+          });
+          unrar.on('close', (code) => {
+            event.log(`Unrar completed with code ${code}`);
+            resolve();
+          });
+        });
+      } else {
+        for (const part of multiPartFiles) {
+          const filePath = join(path, part.name);
           await new Promise<void>((resolve) => {
             const unrar = spawn('unrar', ['x', filePath, path, '-kb', '-y'], { stdio: 'inherit' });
             unrar.stdout?.on('data', (data) => {
@@ -190,24 +204,8 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
               resolve();
             });
           });
-        } else {
-          // on windows use C:\Program Files\7-Zip\7z.exe
-          await new Promise<void>((resolve) => {
-            const unrar = spawn('C:\\Program Files\\7-Zip\\7z.exe', ['x', filePath, path, '-y'], { stdio: 'inherit' });
-            unrar.stdout?.on('data', (data: Buffer) => {
-              event.log(data.toString());
-            });
-            unrar.stderr?.on('data', (data) => {
-              event.log(data.toString());
-            });
-            unrar.on('close', (code) => {
-              event.log(`Unrar completed for ${part.name} with code ${code}`);
-              resolve();
-            });
-          });
         }
       }
-
       // now delete the rar files
       event.log('Deleting rar files..');
       for (const part of multiPartFiles) {
