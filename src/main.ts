@@ -174,6 +174,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   // this was a direct download, we need to multipart unrar these files
     event.log(type);
     if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
+      event.log('Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.');
       if (process.platform === 'win32') {
         console.log(path);
         await new Promise<void>((resolve) => {
