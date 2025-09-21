@@ -175,6 +175,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     event.log(type);
     if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
       if (process.platform === 'win32') {
+        console.log(path);
         await new Promise<void>((resolve) => {
           const unrar = spawn('C:\\Program Files\\7-Zip\\7z.exe', ['x', join(path, multiPartFiles[0].name), '-o"' + path + '"'], { stdio: 'inherit' });
           unrar.stdout?.on('data', (data: Buffer) => {
