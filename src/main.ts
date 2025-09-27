@@ -533,9 +533,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
         // delete all other files and folders in the path except the 'INSTALL HERE' directory        
         event.log(`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`);
-        fs.readdirSync(installDir).forEach(file => {
+        fs.readdirSync(path).forEach(file => {
           if (file !== 'INSTALL HERE') {
-            const fullPath = join(installDir, file);
+            const fullPath = join(path, file);
             const stat = fs.lstatSync(fullPath);
             if (stat.isDirectory()) {
               fs.rmSync(fullPath, { recursive: true, force: true });
