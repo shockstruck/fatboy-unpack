@@ -333,6 +333,18 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }
     }
 
+    if (input.installDir) {
+      // check if the installDir is a valid path, then check if there is content inside the installDir
+      if (!fs.existsSync(input.installDir)) {
+        event.fail('Error: installDir is not a valid path. Please enter a valid path.');
+        return;
+      }
+      if (fs.readdirSync(input.installDir).length !== 0 && path !== input.installDir) {
+        input.installDir = join(input.installDir, name);
+        event.log(`installDir is not empty and path is not the same as installDir, so we will append the game name to the installDir to prevent deleting entire folder contents.`);
+      }
+    }
+
     const setupPath = join(path, 'setup.exe');
     
     let installDir = input.installDir as string;
