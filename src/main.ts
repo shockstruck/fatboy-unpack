@@ -388,30 +388,48 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
         // Now apply the flatpak override
         try {
-          await new Promise<string>((resolve, reject) => {
-            const process = spawnAndHook({
-              stdout: (data: string) => {
-                event.log(data);
-              },
-              stderr: (data: string) => {
-                event.log(data);
-              },
-              onClose: (code: number) => {
-                if (code !== 0) {
-                  reject(new Error(`Process exited with code ${code}`));
-                } else {
-                  resolve('Process completed successfully');
-                }
-              },
-              onError: (err: Error) => {
-                reject(err);
-              },
-              rootPassword: rootPassword
-            }, 'sudo', ['-S', 'flatpak', 'override', 'org.winehq.Wine', '--filesystem=' + installDir]);
-            process.stdin?.write(`${rootPassword}\n`);
-            process.stdin?.end();
-          });
-          event.log(`Overrided Wine to allow access to the installation directory using "${installDir}"`);
+          // Helper function to apply flatpak override for a given directory
+          async function applyFlatpakOverride(dir: string, rootPassword: string) {
+            return new Promise<string>((resolve, reject) => {
+              const process = spawnAndHook({
+                stdout: (data: string) => {
+                  event.log(data);
+                },
+                stderr: (data: string) => {
+                  event.log(data);
+                },
+                onClose: (code: number) => {
+                  if (code !== 0) {
+                    reject(new Error(`Process exited with code ${code}`));
+                  } else {
+                    resolve('Process completed successfully');
+                  }
+                },
+                onError: (err: Error) => {
+                  reject(err);
+                },
+                rootPassword: rootPassword
+              }, 'sudo', [
+                '-S',
+                'flatpak',
+                'override',
+                'org.winehq.Wine',
+                `--filesystem=${dir}`
+              ]);
+              process.stdin?.write(`${rootPassword}\n`);
+              process.stdin?.end();
+            });
+          }
+
+          // Apply flatpak override for both installDir and path
+          if (!rootPassword) {
+            event.fail('Error: rootPassword is not set. Please enter your root password again.');
+            return;
+          }
+          await applyFlatpakOverride(installDir, rootPassword);
+          await applyFlatpakOverride(path, rootPassword);
+
+          event.log(`Overrided Wine to allow access to the installation directory using "${installDir}" and "${path}"`);
         } catch (err) {
           event.fail("Failed to apply flatpak override. Please check your permissions.");
           return;
