@@ -3,6 +3,7 @@
   "icon": "icon.jpg",
   "scripts": {
     "preSetup": "bun install",
-    "run": "bun run ./src/main.ts"
+    "run": "bun run ./src/main.ts",
+    "postSetup": "bun run ./remove-scrapes.script.ts"
   }
 }

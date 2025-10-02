@@ -8,6 +8,7 @@ import { scrapeHer, shouldScrape, axiosGetWithDDOSGuard, updateCookieString, get
 import { join } from "path";
 import { solveDDOSGuard } from "./ddosguard";
 import { catchDownload } from "./download";
+import { findBestGameMatch, Game } from "./string-similarity";
 
 // Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
@@ -20,10 +21,6 @@ const addon = new OGIAddon({
   storefronts: ["steam"]
 });
 
-type Game = {
-  name: string,
-  url: string,
-}
 type GameInfo = {
   name: string,
   company: string,
@@ -70,13 +67,14 @@ addon.on('search', ({ appID, storefront, for: searchType }, event) => {
       return;
     }
     // now get the game metadata from fitgirl
-    const fitGame = search.search(game.name);
-    if (fitGame.length === 0) {
+    const fitGame = findBestGameMatch(game.name, scrapedGames!, search);
+    
+    if (!fitGame) {
       event.resolve([]);
       return;
     }
     
-    const gameMetaData = await scrapeGameMetadata(fitGame[0], generateHash(game.name));
+    const gameMetaData = await scrapeGameMetadata(fitGame, generateHash(game.name));
     let results: Parameters<typeof event.resolve>[0] = [];
     
     // direct service - FuckingFast 
@@ -979,13 +977,6 @@ export async function scrapeGameMetadata(game: Game, hash: string): Promise<Game
   fs.writeFileSync(cachePath, JSON.stringify(data, null, 2));
 
   return data;
-}
-
-function extractSimpleName(input: string) {
-  // Regular expression to match the game name
-  const regex = /^(.+?)([:\-–])/;
-  const match = input.match(regex);
-  return match ? match[1].trim() : null;
 }
 
 function makeSetupINF(installDir: string, addBonus: boolean) {
