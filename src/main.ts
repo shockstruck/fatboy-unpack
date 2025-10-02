@@ -547,6 +547,19 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
           return;
         }
 
+        // ask if the user has finished the setup process
+        const finishedSetup = await event.askForInput("FitGirl Repacks", "Have you finished the setup process for " + name + "?", new ConfigurationBuilder()
+          .addBooleanOption(option => option
+            .setDisplayName('Finished Setup')
+            .setName('finishedSetup')
+            .setDescription('Have you finished the setup process?')
+            .setDefaultValue(false)
+          )
+        );
+        if (finishedSetup.finishedSetup === false) {
+          event.fail('Error: you have not finished the setup process. Please finish the setup process and try again.');
+          return;
+        }
 
         // delete all other files and folders in the path except the 'INSTALL HERE' directory        
         event.log(`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`);
