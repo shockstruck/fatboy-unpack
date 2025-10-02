@@ -513,6 +513,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
                   event.log(data);
                 },
                 onClose: (code: number) => {
+                  console.log('onClose', code);
                   if (code === 0) {
                     resolve('Process completed successfully');
                   } else {
@@ -529,7 +530,6 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
             event.fail('Error opening setup.exe. Check if wine is installed in "' + wineSource + '" and if it is, try again.');
             forceStop = true;
           }
-          
         }
         else if (wineSource === 'wine') {
           try {
@@ -546,6 +546,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         if (forceStop) {
           return;
         }
+
 
         // delete all other files and folders in the path except the 'INSTALL HERE' directory        
         event.log(`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`);
