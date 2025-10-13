@@ -833,8 +833,7 @@ addon.on('request-dl', (appID, info, event) => {
       const pathOfSetupExe = dirname(setupExe.setupExe);
       event.resolve({
         name: 'Local Files | ' + info.name,
-        downloadType: 'direct',
-        files: [],
+        downloadType: 'empty',
         manifest: {
           service: 'local',
           setupExe: setupExe.setupExe,
