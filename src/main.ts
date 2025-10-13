@@ -5,7 +5,7 @@ import { JSDOM } from "jsdom";
 import crypto from 'crypto'
 import { exec, execSync, spawn } from "child_process";
 import { scrapeHer, shouldScrape, axiosGetWithDDOSGuard, updateCookieString, getCookieString } from "./scraper";
-import { join } from "path";
+import { dirname, join } from "path";
 import { solveDDOSGuard } from "./ddosguard";
 import { catchDownload } from "./download";
 import { findBestGameMatch, Game } from "./string-similarity";
@@ -42,9 +42,18 @@ addon.on('configure', (config) => config
 )
 
 addon.on('search', ({ appID, storefront, for: searchType }, event) => {
+  const noResolution: Parameters<typeof event.resolve>[0] = [
+    {
+      downloadType: 'request',
+      name: 'Local Files',
+      manifest: {
+        service: 'local'
+      }
+    }
+  ];
   if (searchType === 'task') {
     event.defer();
-    event.resolve([]);
+    event.resolve(noResolution);
     return;
   }
 
@@ -55,7 +64,7 @@ addon.on('search', ({ appID, storefront, for: searchType }, event) => {
       id: 'fatboy-unpack-scraping',
       type: 'info'
     });
-    event.resolve([]);
+    event.resolve(noResolution);
     return;
   }
 
@@ -63,19 +72,19 @@ addon.on('search', ({ appID, storefront, for: searchType }, event) => {
     console.log('should be deferred')
     const game = await addon.getAppDetails(appID, storefront);
     if (!game) {
-      event.resolve([]);
+      event.resolve(noResolution);
       return;
     }
     // now get the game metadata from fitgirl
     const fitGame = findBestGameMatch(game.name, scrapedGames!, search);
     
     if (!fitGame) {
-      event.resolve([]);
+      event.resolve(noResolution);
       return;
     }
     
     const gameMetaData = await scrapeGameMetadata(fitGame, generateHash(game.name));
-    let results: Parameters<typeof event.resolve>[0] = [];
+    let results: Parameters<typeof event.resolve>[0] = noResolution;
     
     // direct service - FuckingFast 
     console.log('direct services', gameMetaData.directLinks);
@@ -162,7 +171,7 @@ function spawnAndHook(options: {
     stdin: childProcess.stdin
   }
 }
-addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles }, event) => {
+addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiPartFiles, manifest }, event) => {
   const wineSource = addon.config.getStringValue('whereToWine') || 'flatpak';
   event.defer();
   event.log("Setting up fitgirl game...");
@@ -171,7 +180,11 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
   new Promise<void>(async (resolve) => {
   // this was a direct download, we need to multipart unrar these files
     event.log(type);
-    if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
+    if (manifest && manifest.service === 'local') {
+      path = manifest.pathOfSetupExe as string;
+      event.log('Using local setup.exe file: ' + path);
+    }
+    else if (type === 'direct' && Array.isArray(multiPartFiles) && multiPartFiles.length > 0) {
       event.log('Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.');
       if (process.platform === 'win32') {
         console.log(path);
@@ -805,6 +818,28 @@ addon.on('request-dl', (appID, info, event) => {
           name: 'part' + ind + '.rar',
           downloadURL: link
         }))
+      });
+    }
+    else if (info.manifest.service === 'local') {
+      // ask the user to select the setup.exe file
+      const setupExe = await event.askForInput("FitGirl Repacks", "Select the setup.exe file", new ConfigurationBuilder()
+        .addStringOption(option => option
+          .setName('setupExe')
+          .setDisplayName('Setup.exe')
+          .setDescription('Select the setup.exe file in your repack directory')
+          .setInputType('file')
+        )
+      ) as { setupExe: string };
+      const pathOfSetupExe = dirname(setupExe.setupExe);
+      event.resolve({
+        name: 'Local Files | ' + info.name,
+        downloadType: 'direct',
+        files: [],
+        manifest: {
+          service: 'local',
+          setupExe: setupExe.setupExe,
+          pathOfSetupExe: pathOfSetupExe
+        }
       });
     }
   });
