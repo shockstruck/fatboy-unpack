@@ -760,12 +760,19 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       fs.writeFileSync(join(installDir, 'steam_appid.txt'), appID.toString());
     }
 
+    // if there's a "winmm.dll" in the executable path, we need to add it to winedlls
+    let winedlls: string[] = [];
+    for (const dllToAdd of [ 'winmm', 'steam_api64', 'OnlineFix64']) {
+      if (fs.existsSync(join(dirname(gameExecutable.gameExecutable as string), dllToAdd + '.dll'))) {
+        winedlls.push(dllToAdd.toLowerCase());
+      }
+    }
 
     event.resolve({
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
       version: '1.0.0',
-      launchArguments: '',
+      launchArguments: (process.platform === 'linux' && winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + '%command%',
       redistributables
     })
     resolve();
