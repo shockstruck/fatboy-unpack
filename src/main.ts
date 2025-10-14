@@ -772,7 +772,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
       version: '1.0.0',
-      launchArguments: (process.platform === 'linux' && winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + '%command%',
+      launchArguments: (process.platform === 'linux' && winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + ' %command%',
       redistributables
     })
     resolve();
