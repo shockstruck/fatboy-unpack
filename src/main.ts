@@ -767,12 +767,13 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
         winedlls.push(dllToAdd.toLowerCase());
       }
     }
-
+    let appDetails = await addon.getAppDetails(appID, storefront);
+    let version = appDetails?.latestVersion ?? '1.0';
     event.resolve({
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
-      version: '1.0.0',
-      launchArguments: (process.platform === 'linux' && winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + ' %command%',
+      version,
+      launchArguments: process.platform === 'linux' ? ((winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + ' %command%').trim() : '%command%',
       redistributables
     })
     resolve();
