@@ -728,7 +728,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     
     let redistributables: { name: string, path: string }[] = [];
 
-    if (!hasUnity && process.platform === 'linux') {
+    if (process.platform === 'linux') {
       // ask if the user wants to install the redistributables
       const installRedistributables = await event.askForInput("FitGirl Repacks", "Do you want to install the redistributables? This will automatically run winetricks and create a Wine prefix for you.", new ConfigurationBuilder()
         .addBooleanOption(option => option
