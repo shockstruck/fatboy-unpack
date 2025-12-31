@@ -58,6 +58,10 @@ export function findBestGameMatch(searchTerm: string, games: Game[], search: Sea
     .map(game => {
       const normalizedGameName = normalizeGameName(game.name);
       
+      if (normalizedGameName.toLowerCase().includes('switch emulators')) {
+        return { game, score: 0}
+      }
+
       // Calculate a similarity score
       let score = 0;
       if (normalizedGameName === normalizedSearchTerm) {
