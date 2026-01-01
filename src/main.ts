@@ -41,7 +41,8 @@ addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
 )
 
-addon.on('search', ({ appID, storefront, for: searchType }, event) => {
+addon.on('search', (data, event) => {
+  const { appID, storefront, for: searchType } = data;
   const noResolution: Parameters<typeof event.resolve>[0] = [
     {
       downloadType: 'request',
