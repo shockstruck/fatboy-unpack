@@ -32,10 +32,13 @@ type GameInfo = {
 }
 
 let scrapedGames: Game[] | undefined = undefined;
-const search = new SearchTool<Game>([], ['name'], {
-  threshold: 0.1,
-  includeScore: true
-})
+const makeSearch = () => {
+  return new SearchTool<Game>([], ['name'], {
+    threshold: 0.1,
+    includeScore: true
+  })
+}
+let search = makeSearch();
 
 addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
@@ -50,7 +53,7 @@ addon.on('search', (data, event) => {
       manifest: {
         service: 'local'
       }
-    }
+    },
   ];
   if (searchType === 'task') {
     event.defer();
@@ -71,16 +74,32 @@ addon.on('search', (data, event) => {
 
   event.defer(async () => {
     console.log('should be deferred')
+    const noResolutionAndReset: Parameters<typeof event.resolve>[0] = [
+      {
+        downloadType: 'request',
+        name: 'Local Files',
+        manifest: {
+          service: 'local'
+        }
+      },
+      {
+        downloadType: 'task',
+        name: 'Update Scrapes - Refresh FitGirl Repacks',
+        manifest: {
+          task: 're-run-scrapes'
+        }
+      }
+    ];
     const game = await addon.getAppDetails(appID, storefront);
     if (!game) {
-      event.resolve(noResolution);
+      event.resolve(noResolutionAndReset);
       return;
     }
     // now get the game metadata from fitgirl
     const fitGame = findBestGameMatch(game.name, scrapedGames!, search);
     
     if (!fitGame) {
-      event.resolve(noResolution);
+      event.resolve(noResolutionAndReset);
       return;
     }
     
@@ -113,7 +132,11 @@ addon.on('search', (data, event) => {
         filename: generateHash(game.name),
       })
     }
-    event.resolve(results);
+    event.resolve([
+      // sort so that the local files entry (downloadType === 'request' && manifest.service === 'local) is always last, and others retain order. 
+      ...results.filter(r => r.downloadType !== 'request' || r.manifest?.service !== 'local'),
+      ...results.filter(r => r.downloadType === 'request' && r.manifest?.service === 'local')
+    ]);
   });
 
 
@@ -681,6 +704,8 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       }).map(file => join(directory, file));
     }
 
+    // okay installed!
+
     // Try to auto-detect the executable first
     const potentialExecutables = findExecutableFiles(installDir);
     let gameExecutable: { workingDir: string; gameExecutable: string };
@@ -854,6 +879,29 @@ addon.on('request-dl', (appID, info, event) => {
   
 });
 
+addon.on('task-run', (task, event) => {
+  if (task.name === 'Update Scrapes - Refresh FitGirl Repacks') {
+    event.defer(async () => {
+      let task = await addon.task();
+      await scrapeHer(addon, task);
+      task.finish();
+
+      scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+      search = makeSearch();
+      search.addItems(scrapedGames!!);
+
+      event.resolve();
+      addon.notify({
+        message: 'FitGirl Repacks scraped games updated. Reload the Store Page to see FitGirl results. ',
+        id: 'fatboy-unpack-scrapes-updated',
+        type: 'success'
+      });
+    });
+  }
+  else {
+    event.fail('Unknown task: ' + task.name);
+  }
+});
 addon.on('exit', () => {
   process.exit(0);
 });
@@ -930,7 +978,6 @@ addon.on('connect', async () => {
       });
       task.log('Scraping FitGirl...');
       await scrapeHer(addon, task);
-
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
       search.addItems(scrapedGames!!);
       addon.notify({
