@@ -42,6 +42,7 @@ let search = makeSearch();
 
 addon.on('configure', (config) => config
   .addStringOption(option => option.setName('whereToWine').setDefaultValue('flatpak').setDisplayName('Wine Source').setDescription('Where to go to if wine is needed.').setAllowedValues(['flatpak', 'wine']))
+  .addActionOption(option => option.setName('re-run-scrapes').setDisplayName('Re-run Scrapes').setDescription('Re-run the scrapes for FitGirl Repacks').setButtonText('Run').setTaskName('re-run-scrapes'))
 )
 
 addon.on('search', (data, event) => {
@@ -85,9 +86,7 @@ addon.on('search', (data, event) => {
       {
         downloadType: 'task',
         name: 'Update Scrapes - Refresh FitGirl Repacks',
-        manifest: {
-          task: 're-run-scrapes'
-        }
+        taskName: 're-run-scrapes',
       }
     ];
     const game = await addon.getAppDetails(appID, storefront);
@@ -879,29 +878,23 @@ addon.on('request-dl', (appID, info, event) => {
   
 });
 
-addon.on('task-run', (task, event) => {
-  if (task.name === 'Update Scrapes - Refresh FitGirl Repacks') {
-    event.defer(async () => {
-      let task = await addon.task();
-      await scrapeHer(addon, task);
-      task.finish();
+addon.onTask('re-run-scrapes', async (task_this) => {
+  let task = await addon.task();
+  await scrapeHer(addon, task);
+  task.complete();
 
-      scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
-      search = makeSearch();
-      search.addItems(scrapedGames!!);
+  scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
+  search = makeSearch();
+  search.addItems(scrapedGames!!);
 
-      event.resolve();
-      addon.notify({
-        message: 'FitGirl Repacks scraped games updated. Reload the Store Page to see FitGirl results. ',
-        id: 'fatboy-unpack-scrapes-updated',
-        type: 'success'
-      });
-    });
-  }
-  else {
-    event.fail('Unknown task: ' + task.name);
-  }
+  addon.notify({
+    message: 'FitGirl Repacks scraped games updated. Reload the Store Page to see FitGirl results. ',
+    id: 'fatboy-unpack-scrapes-updated',
+    type: 'success'
+  });
+  task_this.complete();
 });
+
 addon.on('exit', () => {
   process.exit(0);
 });
@@ -928,7 +921,7 @@ addon.on('connect', async () => {
         // set the cookie
         updateCookieString(cookieString);
         task.log('DDOS Guard successfully solved');
-        task.finish();
+        task.complete();
         addon.notify({
           id: 'fatboy-unpack-ddos-guard',
           message: 'DDOS Guard successfully solved',
@@ -958,7 +951,7 @@ addon.on('connect', async () => {
         id: 'fatboy-unpack-connected',
         type: 'success'
       });
-      task.finish();
+      task.complete();
       return;
     } else {
       scrapedGames = JSON.parse(fs.readFileSync('fit-scrape-search.json', 'utf-8'));
@@ -987,7 +980,7 @@ addon.on('connect', async () => {
       });
       task.log('Scraping FitGirl...');
     }
-    task.finish();
+    task.complete();
     resolve();
   });
 });

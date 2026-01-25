@@ -1,5 +1,5 @@
 import axios from 'axios';
-import OGIAddon, { CustomTask } from 'ogi-addon';
+import OGIAddon, { Task } from 'ogi-addon';
 import { Browser, Page } from 'puppeteer';
 import puppeteer from 'puppeteer-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
@@ -23,7 +23,7 @@ const HEADERS_FILE = 'ddosguard.json';
 const HEADERS_EXPIRY_HOURS = 24; // Headers expire after 24 hours
 
 // Function to save headers to file
-function saveHeaders(headers: DDOSGuardHeaders, task: CustomTask): void {
+function saveHeaders(headers: DDOSGuardHeaders, task: Task): void {
   try {
     const filePath = path.join(process.cwd(), HEADERS_FILE);
     fs.writeFileSync(filePath, JSON.stringify(headers, null, 2));
@@ -34,7 +34,7 @@ function saveHeaders(headers: DDOSGuardHeaders, task: CustomTask): void {
 }
 
 // Function to load headers from file
-function loadHeaders(task: CustomTask): DDOSGuardHeaders | null {
+function loadHeaders(task: Task): DDOSGuardHeaders | null {
   try {
     const filePath = path.join(process.cwd(), HEADERS_FILE);
     
@@ -64,7 +64,7 @@ function loadHeaders(task: CustomTask): DDOSGuardHeaders | null {
 }
 
 // Utility function to safely perform page operations
-async function safePageOperation<T>(page: Page, operation: () => Promise<T>, task: CustomTask, operationName: string): Promise<T | null> {
+async function safePageOperation<T>(page: Page, operation: () => Promise<T>, task: Task, operationName: string): Promise<T | null> {
   try {
     if (page.isClosed()) {
       task.log(`Page was closed during ${operationName}`);
@@ -81,7 +81,7 @@ async function safePageOperation<T>(page: Page, operation: () => Promise<T>, tas
   }
 }
 
-async function extractCookiesAndUserAgent(browser: Browser, page: Page, task: CustomTask): Promise<{ cookieString: string; userAgent: string } | null> {
+async function extractCookiesAndUserAgent(browser: Browser, page: Page, task: Task): Promise<{ cookieString: string; userAgent: string } | null> {
   try {
     const cookies = await browser.cookies();
     const cookiesFitGirl = cookies.filter(cookie => cookie.domain.includes(FITGIRL_DOMAIN));
@@ -114,7 +114,7 @@ async function extractCookiesAndUserAgent(browser: Browser, page: Page, task: Cu
   }
 }
 
-async function testDDOSGuardSolution(url: string, cookieString: string, userAgent: string, task: CustomTask): Promise<boolean> {
+async function testDDOSGuardSolution(url: string, cookieString: string, userAgent: string, task: Task): Promise<boolean> {
   try {
     task.log('Testing DDoS guard solution...');
     
@@ -158,7 +158,7 @@ async function testDDOSGuardSolution(url: string, cookieString: string, userAgen
   }
 }
 
-async function handleDDOSGuardSolution(browser: Browser, page: Page, url: string, task: CustomTask): Promise<string | null> {
+async function handleDDOSGuardSolution(browser: Browser, page: Page, url: string, task: Task): Promise<string | null> {
   const maxRetries = 3; 
   let retryCount = 0;
   
@@ -314,7 +314,7 @@ async function handleDDOSGuardSolution(browser: Browser, page: Page, url: string
   return null;
 }
 
-export async function solveDDOSGuard(addon: OGIAddon, url: string, task: CustomTask): Promise<string | null> {
+export async function solveDDOSGuard(addon: OGIAddon, url: string, task: Task): Promise<string | null> {
   // First, try to load saved headers
   const savedHeaders = loadHeaders(task);
   if (savedHeaders && savedHeaders.url === url) {

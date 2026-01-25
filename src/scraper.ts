@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { JSDOM } from 'jsdom';
 import axios from 'axios';
-import OGIAddon, { CustomTask } from 'ogi-addon';
+import OGIAddon, { Task } from 'ogi-addon';
 import { solveDDOSGuard } from './ddosguard';
 
 // Global variable to store the cookie string
@@ -30,7 +30,7 @@ function isRetryableError(error: any): boolean {
 }
 
 // Wrapper function for axios.get that handles 403 errors with DDoS guard
-export async function axiosGetWithDDOSGuard(addon: OGIAddon, url: string, options: { headers?: Record<string, string> } = {}, task?: CustomTask): Promise<any> {
+export async function axiosGetWithDDOSGuard(addon: OGIAddon, url: string, options: { headers?: Record<string, string> } = {}, task?: Task): Promise<any> {
   const maxRetries = 3;
   let retryCount = 0;
   let lastError: any = null;
@@ -210,12 +210,12 @@ export async function findPageCount(addon: OGIAddon) {
   }
   return 0;
 }
-export async function scrapeHer(addon: OGIAddon, task: CustomTask) {
+export async function scrapeHer(addon: OGIAddon, task: Task) {
   const games: { name: string, url: string }[] = [];
   const pageCount = await findPageCount(addon);
   if (pageCount === 0 || isNaN(pageCount)) {
     task.log('No page count found, major error. Please report this to the developer.');
-    task.finish();
+    task.complete();
     return;
   }
   task.log(`Found ${pageCount} pages to scrape`);
