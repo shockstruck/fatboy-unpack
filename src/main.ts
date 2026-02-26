@@ -794,7 +794,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       cwd: gameExecutable.workingDir as string,
       launchExecutable: gameExecutable.gameExecutable as string,
       version,
-      launchArguments: process.platform === 'linux' ? ((winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + ' %command%').trim() : '%command%',
+      launchArguments: process.platform === 'linux' ? '%command%' : '%command%',
       redistributables,
       umu: {
         umuId: `steam:${appID}` as `steam:${number}`,
