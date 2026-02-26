@@ -754,30 +754,23 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     let redistributables: { name: string, path: string }[] = [];
 
     if (process.platform === 'linux') {
-      // ask if the user wants to install the redistributables
-      const installRedistributables = await event.askForInput("FitGirl Repacks", "Do you want to install the redistributables? This will automatically run winetricks and create a Wine prefix for you.", new ConfigurationBuilder()
-        .addBooleanOption(option => option
-          .setName('installRedistributables')
-          .setDisplayName('Install Redistributables')
-          .setDescription('Install the redistributables needed for the game.')
-          .setDefaultValue(true)
-        )
-      ) as { installRedistributables: boolean };
-      if (installRedistributables.installRedistributables) {
-        // most redistributables above are what's needed for most games.
-        redistributables.push({
-          name: 'vcrun2015',
-          path: 'winetricks'
-        });
-        redistributables.push({
-          name: 'vcrun2019',
-          path: 'winetricks'
-        });
-        redistributables.push({
-          name: 'dotnet48',
-          path: 'winetricks'
-        });
-      }
+      // always install common redistributables (no prompt)
+      redistributables.push({
+        name: 'vcrun2015',
+        path: 'winetricks'
+      });
+      redistributables.push({
+        name: 'vcrun2019',
+        path: 'winetricks'
+      });
+      redistributables.push({
+        name: 'xna40',
+        path: 'winetricks'
+      });
+      redistributables.push({
+        name: 'dotnet48',
+        path: 'winetricks'
+      });
     }
 
     // write a file steam_appid.txt in the installDir with the steamAppId if it doesn't exist
