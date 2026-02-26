@@ -784,7 +784,7 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
     const dllFiles = fs.readdirSync(installDir).filter(file => file.toLowerCase().endsWith('.dll'));
     for (const dllFile of dllFiles) {
       if (fs.existsSync(join(installDir, dllFile))) {
-        winedlls.push(dllFile);
+        winedlls.push(dllFile.replaceAll('.dll', ''));
       }
     }
     
