@@ -787,11 +787,14 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
 
     // if there's a "winmm.dll" in the executable path, we need to add it to winedlls
     let winedlls: string[] = [];
-    for (const dllToAdd of [ 'winmm', 'steam_api64', 'steam_api', 'OnlineFix64']) {
-      if (fs.existsSync(join(dirname(gameExecutable.gameExecutable as string), dllToAdd + '.dll'))) {
-        winedlls.push(dllToAdd.toLowerCase());
+    // get all .dll files in the installDir and add them to winedlls
+    const dllFiles = fs.readdirSync(installDir).filter(file => file.toLowerCase().endsWith('.dll'));
+    for (const dllFile of dllFiles) {
+      if (fs.existsSync(join(installDir, dllFile))) {
+        winedlls.push(dllFile);
       }
     }
+    
     let appDetails = await addon.getAppDetails(appID, storefront);
     let version = appDetails?.latestVersion ?? '1.0';
     event.resolve({
@@ -799,7 +802,11 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       launchExecutable: gameExecutable.gameExecutable as string,
       version,
       launchArguments: process.platform === 'linux' ? ((winedlls.length > 0 ? 'WINEDLLOVERRIDES="' + winedlls.join(',') + '=n,b"' : '') + ' %command%').trim() : '%command%',
-      redistributables
+      redistributables,
+      umu: {
+        umuId: `steam:${appID}` as `steam:${number}`,
+        dllOverrides: winedlls.map(dll => dll.toLowerCase() + '=n,b')
+      }
     })
     resolve();
   });
