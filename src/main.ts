@@ -798,8 +798,9 @@ addon.on('setup', ({ path, type, name, usedRealDebrid, appID, storefront, multiP
       redistributables,
       umu: {
         umuId: `steam:${appID}` as `steam:${number}`,
-        dllOverrides: winedlls.map(dll => dll.toLowerCase() + '=n,b')
-      }
+        dllOverrides: winedlls.map(dll => dll.toLowerCase() + '=n,b'),
+        protonVersion: 'UMU-Latest'
+      },
     })
     resolve();
   });
