@@ -884,8 +884,7 @@ addon.on(
         redistributables,
         umu: {
           umuId: `steam:${appID}` as `steam:${number}`,
-          dllOverrides: winedlls.map((dll) => dll.toLowerCase() + "=n,b"),
-          protonVersion: "UMU-Proton",
+          dllOverrides: winedlls.map((dll) => dll.toLowerCase() + "=n,b")
         },
       });
       resolve();
