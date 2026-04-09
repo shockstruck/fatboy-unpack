@@ -885,7 +885,7 @@ addon.on(
         umu: {
           umuId: `steam:${appID}` as `steam:${number}`,
           dllOverrides: winedlls.map((dll) => dll.toLowerCase() + "=n,b"),
-          protonVersion: "UMU-Latest",
+          protonVersion: "UMU-Proton",
         },
       });
       resolve();
