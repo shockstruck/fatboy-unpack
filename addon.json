@@ -1,6 +1,6 @@
 {
   "author": "Fat-Addons",
-  "icon": "icon.jpg",
+  "icon": "favicon.png",
   "scripts": {
     "preSetup": "bun install",
     "run": "bun run ./src/main.ts",
