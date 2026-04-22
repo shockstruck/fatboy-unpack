@@ -15,10 +15,11 @@ import {
   updateCookieString,
   getCookieString,
 } from "./scraper";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { solveDDOSGuard } from "./ddosguard";
 import { catchDownload } from "./download";
 import { findBestGameMatch, Game } from "./string-similarity";
+import { fileURLToPath } from "url";
 
 const UMU_BIN = join(process.env.HOME! ?? '', '.local', 'share', 'OpenGameInstaller', 'bin', 'umu', 'umu-run')
 // Cookie string is now managed in scraper.ts
@@ -256,7 +257,108 @@ function spawnAndHook(
 type SetupManifest = {
   service?: string;
   setupExe?: string;
+  pathOfSetupExe?: string;
 };
+
+function resolveSelectedFilePath(
+  selectedPath: string | undefined,
+  baseDir?: string,
+): string | undefined {
+  if (!selectedPath) {
+    return undefined;
+  }
+
+  let normalizedPath = selectedPath.trim();
+  if (!normalizedPath) {
+    return undefined;
+  }
+
+  if (normalizedPath.startsWith("file://")) {
+    try {
+      normalizedPath = fileURLToPath(normalizedPath);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (fs.existsSync(normalizedPath)) {
+    return normalizedPath;
+  }
+
+  if (baseDir) {
+    const relativeToBaseDir = join(baseDir, normalizedPath);
+    if (fs.existsSync(relativeToBaseDir)) {
+      return relativeToBaseDir;
+    }
+  }
+
+  return normalizedPath;
+}
+
+function findInstallerExeCandidates(repackPath: string): string[] {
+  const directories = [repackPath];
+  const foundExes: string[] = [];
+
+  while (directories.length > 0) {
+    const currentDirectory = directories.pop();
+    if (!currentDirectory) {
+      continue;
+    }
+
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(currentDirectory, entry.name);
+      if (entry.isDirectory()) {
+        const lowerName = entry.name.toLowerCase();
+        if (
+          lowerName === "install_here" ||
+          lowerName === "install here" ||
+          lowerName === "__macosx"
+        ) {
+          continue;
+        }
+        directories.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".exe")) {
+        continue;
+      }
+
+      foundExes.push(fullPath);
+    }
+  }
+
+  return foundExes.sort((left, right) => {
+    const leftBase = basename(left).toLowerCase();
+    const rightBase = basename(right).toLowerCase();
+    const leftIsSetup = leftBase === "setup.exe";
+    const rightIsSetup = rightBase === "setup.exe";
+    if (leftIsSetup !== rightIsSetup) {
+      return leftIsSetup ? -1 : 1;
+    }
+
+    const leftHasSetup = leftBase.includes("setup");
+    const rightHasSetup = rightBase.includes("setup");
+    if (leftHasSetup !== rightHasSetup) {
+      return leftHasSetup ? -1 : 1;
+    }
+
+    const leftDepth = left.split(/[\\/]/).length;
+    const rightDepth = right.split(/[\\/]/).length;
+    if (leftDepth !== rightDepth) {
+      return leftDepth - rightDepth;
+    }
+
+    return left.localeCompare(right);
+  });
+}
 
 async function resolveFitgirlSetupExe(
   repackPath: string,
@@ -271,8 +373,8 @@ async function resolveFitgirlSetupExe(
   },
 ): Promise<string | null> {
   const local =
-    manifest?.service === "local" && manifest.setupExe
-      ? manifest.setupExe
+    manifest?.service === "local"
+      ? resolveSelectedFilePath(manifest.setupExe, manifest.pathOfSetupExe)
       : undefined;
   if (local && fs.existsSync(local)) {
     return local;
@@ -285,9 +387,7 @@ async function resolveFitgirlSetupExe(
 
   let exes: string[] = [];
   try {
-    exes = fs
-      .readdirSync(repackPath)
-      .filter((f) => f.toLowerCase().endsWith(".exe"));
+    exes = findInstallerExeCandidates(repackPath);
   } catch {
     event.fail("Could not read the repack directory.");
     return null;
@@ -301,7 +401,7 @@ async function resolveFitgirlSetupExe(
   }
 
   if (exes.length === 1) {
-    return join(repackPath, exes[0]);
+    return exes[0];
   }
 
   const picked = (await event.askForInput(
@@ -318,7 +418,13 @@ async function resolveFitgirlSetupExe(
     ),
   )) as { setupExe: string };
 
-  return join(repackPath, picked.setupExe);
+  const selectedSetupExe = resolveSelectedFilePath(picked.setupExe, repackPath);
+  if (!selectedSetupExe || !fs.existsSync(selectedSetupExe)) {
+    event.fail("The selected setup.exe file does not exist.");
+    return null;
+  }
+
+  return selectedSetupExe;
 }
 
 addon.on(
@@ -1049,13 +1155,19 @@ addon.on("request-dl", (appID, info, event) => {
             .setInputType("file"),
         ),
       )) as { setupExe: string };
-      const pathOfSetupExe = dirname(setupExe.setupExe);
+      const selectedSetupExe = resolveSelectedFilePath(setupExe.setupExe);
+      if (!selectedSetupExe || !fs.existsSync(selectedSetupExe)) {
+        event.fail("The selected setup.exe file does not exist.");
+        return;
+      }
+
+      const pathOfSetupExe = dirname(selectedSetupExe);
       event.resolve({
         name: "Local Files | " + info.name,
         downloadType: "empty",
         manifest: {
           service: "local",
-          setupExe: setupExe.setupExe,
+          setupExe: selectedSetupExe,
           pathOfSetupExe: pathOfSetupExe,
         },
       });
