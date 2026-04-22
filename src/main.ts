@@ -305,33 +305,31 @@ function findInstallerExeCandidates(repackPath: string): string[] {
       continue;
     }
 
-    let entries: fs.Dirent[] = [];
     try {
-      entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(currentDirectory, entry.name);
-      if (entry.isDirectory()) {
-        const lowerName = entry.name.toLowerCase();
-        if (
-          lowerName === "install_here" ||
-          lowerName === "install here" ||
-          lowerName === "__macosx"
-        ) {
+      const entries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(currentDirectory, entry.name);
+        if (entry.isDirectory()) {
+          const lowerName = entry.name.toLowerCase();
+          if (
+            lowerName === "install_here" ||
+            lowerName === "install here" ||
+            lowerName === "__macosx"
+          ) {
+            continue;
+          }
+          directories.push(fullPath);
           continue;
         }
-        directories.push(fullPath);
-        continue;
-      }
 
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".exe")) {
-        continue;
-      }
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".exe")) {
+          continue;
+        }
 
-      foundExes.push(fullPath);
+        foundExes.push(fullPath);
+      }
+    } catch {
+      continue;
     }
   }
 
