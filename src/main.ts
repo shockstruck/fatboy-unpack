@@ -252,6 +252,75 @@ function spawnAndHook(
     stdin: childProcess.stdin,
   };
 }
+
+type SetupManifest = {
+  service?: string;
+  setupExe?: string;
+};
+
+async function resolveFitgirlSetupExe(
+  repackPath: string,
+  manifest: SetupManifest | undefined,
+  event: {
+    fail: (msg: string) => void;
+    askForInput: (
+      title: string,
+      message: string,
+      builder: ConfigurationBuilder,
+    ) => Promise<Record<string, string | boolean | undefined>>;
+  },
+): Promise<string | null> {
+  const local =
+    manifest?.service === "local" && manifest.setupExe
+      ? manifest.setupExe
+      : undefined;
+  if (local && fs.existsSync(local)) {
+    return local;
+  }
+
+  const primary = join(repackPath, "setup.exe");
+  if (fs.existsSync(primary)) {
+    return primary;
+  }
+
+  let exes: string[] = [];
+  try {
+    exes = fs
+      .readdirSync(repackPath)
+      .filter((f) => f.toLowerCase().endsWith(".exe"));
+  } catch {
+    event.fail("Could not read the repack directory.");
+    return null;
+  }
+
+  if (exes.length === 0) {
+    event.fail(
+      "No .exe installers found in the repack directory. Ensure extraction finished.",
+    );
+    return null;
+  }
+
+  if (exes.length === 1) {
+    return join(repackPath, exes[0]);
+  }
+
+  const picked = (await event.askForInput(
+    "FitGirl Repacks",
+    "Select the setup.exe file",
+    new ConfigurationBuilder().addStringOption((option) =>
+      option
+        .setName("setupExe")
+        .setDisplayName("Setup.exe")
+        .setDescription("Select the installer .exe in your repack directory")
+        .setInputType("file")
+        .setAllowedValues(exes)
+        .setDefaultValue(exes[0]),
+    ),
+  )) as { setupExe: string };
+
+  return join(repackPath, picked.setupExe);
+}
+
 addon.on(
   "setup",
   (
@@ -394,6 +463,16 @@ addon.on(
       } else {
         const homeDir = process.env.HOME || process.env.USERPROFILE || "~/";
         const winePrefixDir = join(homeDir, ".wine-fitgirl");
+        const runsSetupViaWine = process.platform !== "win32";
+
+        const setupExePath = await resolveFitgirlSetupExe(
+          path,
+          manifest as SetupManifest | undefined,
+          event,
+        );
+        if (!setupExePath) {
+          return;
+        }
 
         let input:
           | {
@@ -402,14 +481,14 @@ addon.on(
               addBonus: boolean;
             }
           | undefined = undefined;
-        if (process.platform !== "linux") {
+        if (!runsSetupViaWine) {
           const screen = new ConfigurationBuilder()
             .addBooleanOption((option) =>
               option
                 .setName("automate")
                 .setDisplayName("Automate Setup")
                 .setDescription(
-                  "Automate the setup process (If on linux, we recommend doing it by yourself.)",
+                  "Automate the setup process (on Linux or macOS, manual setup is often more reliable).",
                 )
                 .setDefaultValue(true),
             )
@@ -444,15 +523,6 @@ addon.on(
             addBonus: boolean;
           };
         } else {
-          // On Linux, we need to get the installation directory from the user
-          // The 'path' parameter already contains the setup.exe location
-          if (!fs.existsSync(join(path, "setup.exe"))) {
-            event.fail(
-              "Error: setup.exe not found in the download directory. Please ensure the download is complete.",
-            );
-            return;
-          }
-
           const screen = new ConfigurationBuilder().addStringOption((option) =>
             option
               .setName("installDir")
@@ -498,14 +568,13 @@ addon.on(
           }
         }
 
-        const setupPath = join(path, "setup.exe");
 
         installDir = input.installDir as string;
         const addBonus = (input.addBonus as boolean) ?? false;
         const setupINF = makeSetupINF(installDir, addBonus);
 
         // add a directory to the path called 'INSTALL HERE'
-        if (process.platform === "linux") {
+        if (runsSetupViaWine) {
           fs.mkdirSync(join(installDir, "INSTALL HERE"), { recursive: true });
         }
 
@@ -515,32 +584,50 @@ addon.on(
           event.log(`Setup INI file created at ${setupINFPath}`);
           event.log(`Opening setup.exe with INI file`);
           if (process.platform === "win32") {
-            execSync(`"${setupPath}" /SILENT /LOADINF=fatboy-setup.inf`, {
-              cwd: path,
-            });
-          } else if (process.platform === "linux") {
-            if (wineSource === "umu" || wineSource === "flatpak") {
-              await new Promise<string>((resolve, reject) => {
-                const stdout = execSync(
-                  `${UMU_BIN} setup.exe /SILENT /LOADINF=fatboy-setup.inf` +
-                    path, { cwd: path, env: { WINEPREFIX: winePrefixDir, ...process.env } as Record<string, string> }
-                  );
-                resolve(stdout.toString());
-              });
-            }
-          }
-        } else {
-          event.log(`Opening setup.exe`);
-          if (process.platform === "win32") {
             try {
-              execSync(`"${setupPath}"`, { cwd: path });
+              execSync(`"${setupExePath}" /SILENT /LOADINF=fatboy-setup.inf`, {
+                cwd: path,
+              });
             } catch (err) {
               event.fail(
                 "Error opening setup.exe. It's possible that Windows quarantined the file. Please try again.",
               );
               return;
             }
-          } else if (process.platform === "linux") {
+          } else if (runsSetupViaWine) {
+            if (wineSource === "umu" || wineSource === "flatpak") {
+              try {
+                execSync(
+                  `${UMU_BIN} "${setupExePath}" /SILENT /LOADINF=fatboy-setup.inf`,
+                  {
+                    cwd: path,
+                    env: {
+                      WINEPREFIX: winePrefixDir,
+                      ...process.env,
+                    } as Record<string, string>,
+                    stdio: "inherit",
+                  },
+                );
+              } catch {
+                event.fail(
+                  'Error opening setup.exe via Wine. Check that Wine/UMU is installed and try again.',
+                );
+                return;
+              }
+            }
+          }
+        } else {
+          event.log(`Opening setup.exe`);
+          if (process.platform === "win32") {
+            try {
+              execSync(`"${setupExePath}"`, { cwd: path });
+            } catch (err) {
+              event.fail(
+                "Error opening setup.exe. It's possible that Windows quarantined the file. Please try again.",
+              );
+              return;
+            }
+          } else if (runsSetupViaWine) {
             let acknowledged = false;
             while (!acknowledged) {
               let acknowledge = await event.askForInput(
@@ -609,7 +696,7 @@ addon.on(
                     },
                     UMU_BIN,
                     [
-                      "setup.exe",
+                      setupExePath,
                     ],
                   ),
                 );
