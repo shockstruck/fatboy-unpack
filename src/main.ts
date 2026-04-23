@@ -1030,7 +1030,7 @@ addon.on(
       if (process.platform === "linux") {
         // always install common redistributables (no prompt)
         redistributables.push({
-          name: "vcrun2015",
+          name: "dotnet48",
           path: "winetricks",
         });
         redistributables.push({
@@ -1038,11 +1038,11 @@ addon.on(
           path: "winetricks",
         });
         redistributables.push({
-          name: "xna40",
+          name: "vcrun2015",
           path: "winetricks",
         });
         redistributables.push({
-          name: "dotnet48",
+          name: "xna40",
           path: "winetricks",
         });
       }
