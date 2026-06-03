@@ -21,7 +21,15 @@ import { catchDownload } from "./download";
 import { findBestGameMatch, Game } from "./string-similarity";
 import { fileURLToPath } from "url";
 
-const UMU_BIN = join(process.env.HOME! ?? '', '.local', 'share', 'OpenGameInstaller', 'bin', 'umu', 'umu-run')
+const UMU_BIN = join(
+  process.env.HOME! ?? "",
+  ".local",
+  "share",
+  "OpenGameInstaller",
+  "bin",
+  "umu",
+  "umu-run",
+);
 // Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
   author: "Fat-Addons",
@@ -66,7 +74,9 @@ addon.on("configure", (config) =>
       option
         .setName("ignoreHypervisorOnLinux")
         .setDisplayName("Ignore HYPERVISOR Cracks on Linux")
-        .setDescription("Do not show FitGirl entries with HYPERVISOR in the title when running on Linux.")
+        .setDescription(
+          "Do not show FitGirl entries with HYPERVISOR in the title when running on Linux.",
+        )
         .setDefaultValue(true),
     )
     .addActionOption((option) =>
@@ -206,7 +216,9 @@ function spawnAndHook(
   command: Parameters<typeof spawn>[0],
   args: Parameters<typeof spawn>[1],
 ) {
-  const spawnOptions = options.cwd ? { cwd: options.cwd, env: options.env } : {};
+  const spawnOptions = options.cwd
+    ? { cwd: options.cwd, env: options.env }
+    : {};
   console.log(
     "running: " +
       command.replace(
@@ -683,7 +695,6 @@ addon.on(
           }
         }
 
-
         installDir = input.installDir as string;
         const addBonus = (input.addBonus as boolean) ?? false;
         const setupINF = makeSetupINF(installDir, addBonus);
@@ -725,7 +736,7 @@ addon.on(
                 );
               } catch {
                 event.fail(
-                  'Error opening setup.exe via Wine. Check that Wine/UMU is installed and try again.',
+                  "Error opening setup.exe via Wine. Check that Wine/UMU is installed and try again.",
                 );
                 return;
               }
@@ -810,9 +821,7 @@ addon.on(
                       },
                     },
                     UMU_BIN,
-                    [
-                      setupExePath,
-                    ],
+                    [setupExePath],
                   ),
                 );
               } catch (err) {
@@ -825,94 +834,94 @@ addon.on(
                 forceStop = true;
               }
 
-            if (forceStop) {
-              return;
-            }
-
-            // ask if the user has finished the setup process
-            const finishedSetup = await event.askForInput(
-              "FitGirl Repacks",
-              "Have you finished the setup process for " + name + "?",
-              new ConfigurationBuilder().addBooleanOption((option) =>
-                option
-                  .setDisplayName("Finished Setup")
-                  .setName("finishedSetup")
-                  .setDescription("Have you finished the setup process?")
-                  .setDefaultValue(false),
-              ),
-            );
-            if (finishedSetup.finishedSetup === false) {
-              event.fail(
-                "Error: you have not finished the setup process. Please finish the setup process and try again.",
-              );
-              return;
-            }
-
-            // delete all other files and folders in the path except the 'INSTALL HERE' directory
-            event.log(
-              `Deleting all other files and folders in the path except the 'INSTALL HERE' directory`,
-            );
-            fs.readdirSync(path).forEach((file) => {
-              if (file !== "INSTALL HERE") {
-                const fullPath = join(path, file);
-                const stat = fs.lstatSync(fullPath);
-                if (stat.isDirectory()) {
-                  fs.rmSync(fullPath, { recursive: true, force: true });
-                } else {
-                  fs.unlinkSync(fullPath);
-                }
+              if (forceStop) {
+                return;
               }
-            });
-            event.log("Deleted.");
 
-            // move the contents of 'INSTALL HERE' directory to the path
-            const installHereDir = join(installDir, "INSTALL HERE");
+              // ask if the user has finished the setup process
+              const finishedSetup = await event.askForInput(
+                "FitGirl Repacks",
+                "Have you finished the setup process for " + name + "?",
+                new ConfigurationBuilder().addBooleanOption((option) =>
+                  option
+                    .setDisplayName("Finished Setup")
+                    .setName("finishedSetup")
+                    .setDescription("Have you finished the setup process?")
+                    .setDefaultValue(false),
+                ),
+              );
+              if (finishedSetup.finishedSetup === false) {
+                event.fail(
+                  "Error: you have not finished the setup process. Please finish the setup process and try again.",
+                );
+                return;
+              }
 
-            if (fs.existsSync(installHereDir)) {
-              // Check if there's content in INSTALL HERE
-              const installHereFiles = fs.readdirSync(installHereDir);
-
-              if (installHereFiles.length > 0) {
-                // If there's a single nested folder, move its contents up
-                if (
-                  installHereFiles.length === 1 &&
-                  fs
-                    .statSync(join(installHereDir, installHereFiles[0]))
-                    .isDirectory()
-                ) {
-                  const nestedDir = join(installHereDir, installHereFiles[0]);
-                  const nestedFiles = fs.readdirSync(nestedDir);
-
-                  // Move all files from the nested directory to the parent path
-                  for (const file of nestedFiles) {
-                    const sourcePath = join(nestedDir, file);
-                    const destPath = join(installDir, file);
-                    fs.renameSync(sourcePath, destPath);
+              // delete all other files and folders in the path except the 'INSTALL HERE' directory
+              event.log(
+                `Deleting all other files and folders in the path except the 'INSTALL HERE' directory`,
+              );
+              fs.readdirSync(path).forEach((file) => {
+                if (file !== "INSTALL HERE") {
+                  const fullPath = join(path, file);
+                  const stat = fs.lstatSync(fullPath);
+                  if (stat.isDirectory()) {
+                    fs.rmSync(fullPath, { recursive: true, force: true });
+                  } else {
+                    fs.unlinkSync(fullPath);
                   }
-                  event.log(
-                    `Moved contents from nested directory '${installHereFiles[0]}' to ${installDir}`,
-                  );
-                } else {
-                  // Move all files from INSTALL HERE to the parent path
-                  for (const file of installHereFiles) {
-                    const sourcePath = join(installHereDir, file);
-                    const destPath = join(installDir, file);
-                    fs.renameSync(sourcePath, destPath);
+                }
+              });
+              event.log("Deleted.");
+
+              // move the contents of 'INSTALL HERE' directory to the path
+              const installHereDir = join(installDir, "INSTALL HERE");
+
+              if (fs.existsSync(installHereDir)) {
+                // Check if there's content in INSTALL HERE
+                const installHereFiles = fs.readdirSync(installHereDir);
+
+                if (installHereFiles.length > 0) {
+                  // If there's a single nested folder, move its contents up
+                  if (
+                    installHereFiles.length === 1 &&
+                    fs
+                      .statSync(join(installHereDir, installHereFiles[0]))
+                      .isDirectory()
+                  ) {
+                    const nestedDir = join(installHereDir, installHereFiles[0]);
+                    const nestedFiles = fs.readdirSync(nestedDir);
+
+                    // Move all files from the nested directory to the parent path
+                    for (const file of nestedFiles) {
+                      const sourcePath = join(nestedDir, file);
+                      const destPath = join(installDir, file);
+                      fs.renameSync(sourcePath, destPath);
+                    }
+                    event.log(
+                      `Moved contents from nested directory '${installHereFiles[0]}' to ${installDir}`,
+                    );
+                  } else {
+                    // Move all files from INSTALL HERE to the parent path
+                    for (const file of installHereFiles) {
+                      const sourcePath = join(installHereDir, file);
+                      const destPath = join(installDir, file);
+                      fs.renameSync(sourcePath, destPath);
+                    }
+                    event.log(
+                      `Moved contents from 'INSTALL HERE' directory to ${installDir}`,
+                    );
                   }
-                  event.log(
-                    `Moved contents from 'INSTALL HERE' directory to ${installDir}`,
-                  );
+
+                  // then, delete the 'INSTALL HERE' directory
+                  fs.rmSync(installHereDir, { recursive: true, force: true });
                 }
 
-                // then, delete the 'INSTALL HERE' directory
+                // Remove the now-empty INSTALL HERE directory
                 fs.rmSync(installHereDir, { recursive: true, force: true });
               }
-
-              // Remove the now-empty INSTALL HERE directory
-              fs.rmSync(installHereDir, { recursive: true, force: true });
             }
           }
-        }
         }
       } // end of !continueFlag else block
 
@@ -1049,10 +1058,6 @@ addon.on(
           path: "winetricks",
         });
         redistributables.push({
-          name: "vcrun2015",
-          path: "winetricks",
-        });
-        redistributables.push({
           name: "xna40",
           path: "winetricks",
         });
@@ -1086,7 +1091,7 @@ addon.on(
         redistributables,
         umu: {
           umuId: `steam:${appID}` as `steam:${number}`,
-          dllOverrides: winedlls.map((dll) => dll.toLowerCase() + "=n,b")
+          dllOverrides: winedlls.map((dll) => dll.toLowerCase() + "=n,b"),
         },
       });
       resolve();
