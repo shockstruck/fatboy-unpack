@@ -1105,23 +1105,35 @@ addon.on("request-dl", (appID, info, event) => {
       event.fail("No manifest found");
       return;
     }
+    console.log("Download request for appID:", appID, info.manifest);
     if (info.manifest.service === "FuckingFast") {
       const links = info.manifest.links as { name: string; url: string }[];
+      console.log(
+        `FuckingFast: resolving ${links.length} link(s) for ${info.name}`,
+      );
       let foundLinks: string[] = [];
-      for (const link of links) {
+      for (const [linkIndex, link] of links.entries()) {
+        console.log(
+          `FuckingFast: part ${linkIndex + 1}/${links.length} "${link.name}" -> ${link.url}`,
+        );
         let tries = 0;
         while (tries < 3) {
+          tries++;
+          console.log(`FuckingFast: attempt ${tries}/3 for "${link.name}"`);
           try {
             const downloadURL = await catchDownload(
               link.url,
               ".link-button.gay-button",
             );
             if (downloadURL) {
+              console.log(
+                `FuckingFast: got direct url for "${link.name}": ${downloadURL}`,
+              );
               foundLinks.push(downloadURL);
               addon.notify({
                 message:
                   "Found link (" +
-                  (links.indexOf(link) + 1) +
+                  (linkIndex + 1) +
                   "/" +
                   links.length +
                   ") for " +
@@ -1131,14 +1143,18 @@ addon.on("request-dl", (appID, info, event) => {
               });
               break;
             }
+            console.log(
+              `FuckingFast: attempt ${tries}/3 returned no url for "${link.name}"`,
+            );
           } catch (err) {
-            console.error("Error downloading from FuckingFast", err);
+            console.log(`FuckingFast: attempt ${tries}/3 error: ${err}`);
           }
-          tries++;
         }
 
-        if (tries === 3) {
-          event.fail("Failed to find download link from FuckingFast");
+        if (foundLinks.length <= linkIndex) {
+          event.fail(
+            `Failed to find download link from FuckingFast for "${link.name}" after 3 attempts`,
+          );
           return;
         }
       }
@@ -1146,6 +1162,9 @@ addon.on("request-dl", (appID, info, event) => {
         event.fail("No links found");
         return;
       }
+      console.log(
+        `FuckingFast: resolved ${foundLinks.length}/${links.length} direct url(s)`,
+      );
       event.resolve({
         name: "FuckingFast | " + info.name,
         downloadType: "direct",
@@ -1185,6 +1204,8 @@ addon.on("request-dl", (appID, info, event) => {
           pathOfSetupExe: pathOfSetupExe,
         },
       });
+    } else {
+      console.log("unknown manifest service:", info.manifest.service);
     }
   });
 });
