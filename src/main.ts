@@ -62,6 +62,13 @@ addon.on("configure", (config) =>
         .setDescription("Where to go to if wine is needed.")
         .setAllowedValues(["umu"]),
     )
+    .addBooleanOption((option) =>
+      option
+        .setName("ignoreHypervisorOnLinux")
+        .setDisplayName("Ignore HYPERVISOR Cracks on Linux")
+        .setDescription("Do not show FitGirl entries with HYPERVISOR in the title when running on Linux.")
+        .setDefaultValue(true),
+    )
     .addActionOption((option) =>
       option
         .setName("re-run-scrapes")
@@ -123,7 +130,11 @@ addon.on("search", (data, event) => {
       return;
     }
     // now get the game metadata from fitgirl
-    const fitGame = findBestGameMatch(game.name, scrapedGames!, search);
+    const fitGame = findBestGameMatch(game.name, scrapedGames!, search, {
+      ignoreHypervisor:
+        process.platform === "linux" &&
+        (addon.config.getBooleanValue("ignoreHypervisorOnLinux") ?? true),
+    });
 
     if (!fitGame) {
       event.resolve(noResolutionAndReset);
