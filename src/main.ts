@@ -1048,6 +1048,10 @@ addon.on(
       let redistributables: { name: string; path: string }[] = [];
 
       if (process.platform === "linux") {
+        redistributables.push({
+          name: "dotnet40",
+          path: "winetricks",
+        });
         // always install common redistributables (no prompt)
         redistributables.push({
           name: "dotnet48",
