@@ -1090,7 +1090,7 @@ addon.on("request-dl", (appID, info, event) => {
       return;
     }
     if (info.manifest.service === "FuckingFast") {
-      const links = info.manifest.links;
+      const links = info.manifest.links as { name: string; url: string }[];
       let foundLinks: string[] = [];
       for (const link of links) {
         let tries = 0;
