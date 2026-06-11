@@ -1399,7 +1399,6 @@ export async function scrapeGameMetadata(
     const directHeader = Array.from(entry.querySelectorAll("h3")).find((h3) =>
       h3.textContent?.includes("Download Mirrors (Direct Links)"),
     );
-    console.log("directHeader", directHeader);
     if (directHeader) {
       const hosters =
         directHeader.nextElementSibling?.nextElementSibling?.querySelectorAll(
