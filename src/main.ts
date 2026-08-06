@@ -18,6 +18,12 @@ import {
 import { basename, dirname, join } from "path";
 import { solveDDOSGuard } from "./ddosguard";
 import { catchDownload } from "./download";
+import {
+  extractAllWithProgress,
+  type ExtractionJob,
+  parseSevenZipProgress,
+  parseUnrarProgress,
+} from "./extraction-progress";
 import { findBestGameMatch, Game } from "./string-similarity";
 import { fileURLToPath } from "url";
 
@@ -508,44 +514,45 @@ addon.on(
         event.log(
           "Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.",
         );
-        if (process.platform === "win32") {
-          console.log(path);
-          await new Promise<void>((resolve) => {
-            const unrar = spawn(
-              "C:\\Program Files\\7-Zip\\7z.exe",
-              ["x", join(path, multiPartFiles[0].name)],
-              { stdio: "inherit", cwd: path },
-            );
-            unrar.stdout?.on("data", (data: Buffer) => {
-              event.log(data.toString());
-            });
-            unrar.stderr?.on("data", (data) => {
-              event.log(data.toString());
-            });
-            unrar.on("close", (code) => {
-              event.log(`Unrar completed with code ${code}`);
-              resolve();
-            });
-          });
-        } else {
-          for (const part of multiPartFiles) {
-            const filePath = join(path, part.name);
-            await new Promise<void>((resolve) => {
-              const unrar = spawn("unrar", ["x", filePath, path, "-kb", "-y"], {
-                stdio: "inherit",
-              });
-              unrar.stdout?.on("data", (data) => {
-                event.log(data.toString());
-              });
-              unrar.stderr?.on("data", (data) => {
-                event.log(data.toString());
-              });
-              unrar.on("close", (code) => {
-                event.log(`Unrar completed for ${part.name} with code ${code}`);
-                resolve();
-              });
-            });
+        const setProgress = (progress: number): void => {
+          const normalizedProgress = Math.max(0, Math.min(progress, 100));
+          if (
+            "setProgress" in event &&
+            typeof event.setProgress === "function"
+          ) {
+            event.setProgress(normalizedProgress);
+          } else {
+            event.progress = normalizedProgress;
           }
+        };
+        try {
+          // FuckingFast uses synthetic partN.rar names for independent archives.
+          const extractionJobs: ExtractionJob[] = multiPartFiles.map(
+            (part) => {
+              const filePath = join(path, part.name);
+              const size = Math.max(fs.statSync(filePath).size, 1);
+              return process.platform === "win32"
+                ? {
+                    command: "C:\\Program Files\\7-Zip\\7z.exe",
+                    args: ["x", filePath, "-bso0", "-bsp1", "-y"],
+                    cwd: path,
+                    size,
+                    parseProgress: parseSevenZipProgress,
+                  }
+                : {
+                    command: "unrar",
+                    args: ["x", filePath, path, "-idn", "-kb", "-y"],
+                    size,
+                    parseProgress: parseUnrarProgress,
+                  };
+            },
+          );
+          await extractAllWithProgress(extractionJobs, setProgress);
+          event.log(`Unrar completed for ${multiPartFiles.length} archive(s)`);
+        } catch (error) {
+          event.fail(`Failed to extract downloaded files: ${String(error)}`);
+          resolve();
+          return;
         }
         // now delete the rar files
         event.log("Deleting rar files..");
