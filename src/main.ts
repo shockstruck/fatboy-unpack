@@ -514,17 +514,6 @@ addon.on(
         event.log(
           "Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.",
         );
-        const setProgress = (progress: number): void => {
-          const normalizedProgress = Math.max(0, Math.min(progress, 100));
-          if (
-            "setProgress" in event &&
-            typeof event.setProgress === "function"
-          ) {
-            event.setProgress(normalizedProgress);
-          } else {
-            event.progress = normalizedProgress;
-          }
-        };
         try {
           // FuckingFast uses synthetic partN.rar names for independent archives.
           const extractionJobs: ExtractionJob[] = multiPartFiles.map(
@@ -547,7 +536,9 @@ addon.on(
                   };
             },
           );
-          await extractAllWithProgress(extractionJobs, setProgress);
+          await extractAllWithProgress(extractionJobs, (progress) => {
+            event.progress = progress;
+          });
           event.log(`Unrar completed for ${multiPartFiles.length} archive(s)`);
         } catch (error) {
           event.fail(`Failed to extract downloaded files: ${String(error)}`);
