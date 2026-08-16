@@ -1,9 +1,5 @@
-import puppeteer from "puppeteer-extra";
-import AdblockerPlugin from "puppeteer-extra-plugin-adblocker";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
-
-puppeteer.use(AdblockerPlugin());
-puppeteer.use(StealthPlugin());
+import puppeteer from "puppeteer";
+import { connect } from "puppeteer-real-browser";
 
 export async function catchDownload(
   url: string,
@@ -11,11 +7,18 @@ export async function catchDownload(
 ): Promise<string | null> {
   const ffLog = (msg: string) => console.log(`[FuckingFast] ${msg}`);
 
-  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+  let browser: Awaited<ReturnType<typeof connect>>["browser"] | undefined;
   try {
     ffLog(`launching browser for ${url}`);
-    browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
+    const connection = await connect({
+      headless: false,
+      turnstile: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      customConfig: { chromePath: puppeteer.executablePath() },
+      connectOption: { defaultViewport: null },
+    });
+    browser = connection.browser;
+    const page = connection.page;
 
     ffLog(`navigating to ${url}`);
     const response = await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -23,11 +26,6 @@ export async function catchDownload(
       `goto finished: status=${response?.status() ?? "none"} finalUrl=${page.url()}`,
     );
 
-    await page
-      .waitForNetworkIdle({ idleTime: 500, timeout: 15000 })
-      .catch((err) => {
-        ffLog(`waitForNetworkIdle timed out or failed: ${err}`);
-      });
     await page.waitForSelector("body");
     ffLog(`page ready: title="${await page.title()}"`);
 
@@ -54,14 +52,29 @@ export async function catchDownload(
     }
 
     ffLog(`requesting direct url from ${downloadPath}`);
+    await page.waitForFunction(
+      "Boolean(window.turnstileToken || document.querySelector('[name=cf-turnstile-response]')?.value)",
+      { timeout: 30000 },
+    );
     const downloadResponse = await page.evaluate(
       async (path): Promise<{ status: number; downloadURL: string | null }> => {
+        const turnstileWindow = window as Window & {
+          turnstileToken?: string;
+        };
+        const turnstileInput = document.querySelector<HTMLInputElement>(
+          '[name="cf-turnstile-response"]',
+        );
+        const token = turnstileWindow.turnstileToken ?? turnstileInput?.value;
         const response = await fetch(path, {
           method: "POST",
           headers: {
             "HX-Request": "true",
+            "HX-Target": "",
             "HX-Current-URL": location.href,
           },
+          body: new URLSearchParams({
+            "cf-turnstile-response": token ?? "",
+          }),
         });
         return {
           status: response.status,
