@@ -2,7 +2,7 @@
   "author": "Fat-Addons",
   "icon": "favicon.png",
   "scripts": {
-    "preSetup": "bun install --ignore-scripts && bunx --bun puppeteer browsers install chrome",
+    "preSetup": "bun --bun install --frozen-lockfile",
     "run": "bun run ./src/main.ts",
     "postSetup": "bun run ./remove-scrapes.script.ts"
   }
