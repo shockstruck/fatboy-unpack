@@ -1056,7 +1056,7 @@ addon.on(
           path: "winetricks",
         });
         redistributables.push({
-          name: "vcrun2019",
+          name: "vcrun2022",
           path: "winetricks",
         });
         redistributables.push({
