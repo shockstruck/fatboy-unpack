@@ -2,6 +2,7 @@ import OGIAddon, {
   ConfigurationBuilder,
   SearchResult,
   SearchTool,
+  type EventListenerTypes,
 } from "ogi-addon";
 import fs from "fs";
 import axios from "axios";
@@ -26,6 +27,17 @@ import {
 } from "./extraction-progress";
 import { findBestGameMatch, Game } from "./string-similarity";
 import { fileURLToPath } from "url";
+import {
+  extractRepackVersion,
+  listInstalledRepacks,
+  loadInstalledRepack,
+  saveInstalledRepack,
+} from "./repack-store";
+import {
+  discardUpdateBackup,
+  recoverUpdateTransaction,
+} from "./update-transaction";
+import { applyLocalUpdatePackages, installDirOf } from "./update-flow";
 
 const UMU_BIN = join(
   process.env.HOME! ?? "",
@@ -97,6 +109,24 @@ addon.on("configure", (config) =>
 
 addon.on("search", (data, event) => {
   const { appID, storefront, for: searchType } = data;
+  if (data.for === "update") {
+    // Local-package MVP: the user supplies already-downloaded update packages.
+    // clearOldFilesBeforeUpdate must stay false; these updaters patch in place.
+    const record = loadInstalledRepack(appID);
+    event.defer();
+    event.resolve([
+      {
+        name: "Local Update Packages | " + data.libraryInfo.name,
+        downloadType: "request",
+        manifest: {
+          service: "local-update",
+          targetVersion: record?.pendingUpdateVersion ?? "unknown",
+        },
+        clearOldFilesBeforeUpdate: false,
+      },
+    ]);
+    return;
+  }
   const noResolution: Parameters<typeof event.resolve>[0] = [
     {
       downloadType: "request",
@@ -184,6 +214,10 @@ addon.on("search", (data, event) => {
             name: link.name,
             url: link.url,
           })),
+          // Exact repack identity, persisted at setup so update checks never
+          // fuzzy-match installed games again.
+          fitgirlUrl: fitGame.url,
+          fitgirlRelease: fitGame.name,
         },
       });
     }
@@ -195,6 +229,10 @@ addon.on("search", (data, event) => {
         downloadType: "magnet",
         downloadURL: gameMetaData.magnetLink,
         filename: generateHash(game.name),
+        manifest: {
+          fitgirlUrl: fitGame.url,
+          fitgirlRelease: fitGame.name,
+        },
       });
     }
     event.resolve([
@@ -207,6 +245,65 @@ addon.on("search", (data, event) => {
       ),
     ]);
   });
+});
+
+addon.on("check-for-updates", ({ appID, storefront, currentVersion }, event) => {
+  event.defer(async () => {
+    const record = loadInstalledRepack(appID);
+    if (!record?.fitgirlUrl) {
+      // Without the exact repack page persisted at install we cannot know the
+      // update chain; never fuzzy-match an installed game.
+      event.resolve({ available: false });
+      return;
+    }
+
+    let latestVersion: string;
+    try {
+      const response = await axiosGetWithDDOSGuard(addon, record.fitgirlUrl, {});
+      const dom = new JSDOM(response.data);
+      const title =
+        dom.window.document.querySelector("h1.entry-title")?.textContent ?? "";
+      latestVersion = extractRepackVersion(title);
+    } catch (err) {
+      console.log(`check-for-updates: failed to fetch repack page: ${err}`);
+      event.resolve({ available: false });
+      return;
+    }
+
+    // Versions are opaque labels: only inequality against the installed
+    // version signals an update, never any ordering of the strings.
+    const installedVersion = record.installedVersion ?? currentVersion;
+    if (latestVersion === "unknown" || latestVersion === installedVersion) {
+      event.resolve({ available: false });
+      return;
+    }
+
+    record.pendingUpdateVersion = latestVersion;
+    saveInstalledRepack(record);
+    event.resolve({ available: true, version: latestVersion });
+  });
+});
+
+addon.on("launch-app", ({ libraryInfo, launchType }, event) => {
+  event.defer();
+  // A retained pre-update backup is only discarded once the updated game
+  // has actually launched.
+  if (launchType === "post") {
+    const record = loadInstalledRepack(libraryInfo.appID);
+    if (record?.pendingBackupDir) {
+      try {
+        discardUpdateBackup(installDirOf(libraryInfo));
+        record.pendingBackupDir = undefined;
+        saveInstalledRepack(record);
+        console.log(
+          `Discarded update backup for ${libraryInfo.name} after successful launch`,
+        );
+      } catch (err) {
+        console.log(`Failed to discard update backup: ${err}`);
+      }
+    }
+  }
+  event.complete();
 });
 
 function spawnAndHook(
@@ -454,10 +551,86 @@ async function resolveFitgirlSetupExe(
   return selectedSetupExe;
 }
 
+type UpdateSetupData = Extract<
+  Parameters<EventListenerTypes["setup"]>[0],
+  { for: "update" }
+>;
+type SetupEvent = Parameters<EventListenerTypes["setup"]>[1];
+
+function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
+  event.defer(async () => {
+    const { currentLibraryInfo, manifest, appID } = data;
+    if (manifest?.service !== "local-update") {
+      event.fail("Unknown update manifest service");
+      return;
+    }
+
+    const packages = (manifest.packages as string[] | undefined) ?? [];
+    if (packages.length === 0) {
+      event.fail("No update packages were selected");
+      return;
+    }
+
+    const record = loadInstalledRepack(appID);
+    // OGI validates the resolved version against the one check-for-updates
+    // reported; anything else marks the update failed.
+    const targetVersion =
+      (manifest.targetVersion as string | undefined) ??
+      record?.pendingUpdateVersion ??
+      "unknown";
+
+    const installDir = installDirOf(currentLibraryInfo);
+    try {
+      // Clean up any interrupted previous attempt before starting a new one.
+      recoverUpdateTransaction(installDir, (message) => event.log(message));
+
+      const { backupDir } = await applyLocalUpdatePackages({
+        packages,
+        targetVersion,
+        currentLibraryInfo,
+        context: {
+          platform: process.platform,
+          umuRunPath: UMU_BIN,
+          homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
+        },
+        log: (message) => event.log(message),
+      });
+
+      if (record) {
+        record.installedVersion = targetVersion;
+        record.pendingUpdateVersion = undefined;
+        record.pendingBackupDir = backupDir;
+        record.appliedUpdates.push({
+          version: targetVersion,
+          packages,
+          appliedAt: new Date().toISOString(),
+        });
+        saveInstalledRepack(record);
+      }
+    } catch (err) {
+      event.fail(
+        `Update failed and the installation was left untouched: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    // Launch metadata must survive the update, including the UMU association.
+    event.resolve({
+      version: targetVersion,
+      cwd: currentLibraryInfo.cwd,
+      launchExecutable: currentLibraryInfo.launchExecutable,
+      launchArguments: currentLibraryInfo.launchArguments ?? "",
+      launchEnv: currentLibraryInfo.launchEnv,
+      redistributables: currentLibraryInfo.redistributables,
+      umu: currentLibraryInfo.umu,
+    });
+  });
+}
+
 addon.on(
   "setup",
-  (
-    {
+  (data, event) => {
+    let {
       path,
       type,
       name,
@@ -466,9 +639,11 @@ addon.on(
       storefront,
       multiPartFiles,
       manifest,
-    },
-    event,
-  ) => {
+    } = data;
+    if (data.for === "update") {
+      runUpdateSetup(data, event);
+      return;
+    }
     const wineSource = addon.config.getStringValue("whereToWine") || "flatpak";
     event.defer();
     event.log("Setting up fitgirl game...");
@@ -1082,8 +1257,20 @@ addon.on(
         }
       }
 
-      let appDetails = await addon.getAppDetails(appID, storefront);
-      let version = appDetails?.latestVersion ?? "1.0";
+      // The installed version comes from the repack release itself, never
+      // Steam's latestVersion; "unknown" is honest when the source omits one.
+      const sourceRelease = manifest?.fitgirlRelease as string | undefined;
+      const version = extractRepackVersion(sourceRelease);
+      saveInstalledRepack({
+        appID,
+        storefront,
+        name,
+        fitgirlUrl: manifest?.fitgirlUrl as string | undefined,
+        sourceRelease,
+        installDir,
+        installedVersion: version,
+        appliedUpdates: [],
+      });
       event.resolve({
         cwd: gameExecutable.workingDir as string,
         launchExecutable: gameExecutable.gameExecutable as string,
@@ -1175,6 +1362,56 @@ addon.on("request-dl", (appID, info, event) => {
           downloadURL: link,
         })),
       });
+    } else if (info.manifest.service === "local-update") {
+      // Local-package MVP: the user points us at every updater package for the
+      // chain, oldest first. Each is staged and applied in this order.
+      const packages: string[] = [];
+      let addMore = true;
+      while (addMore) {
+        const picked = (await event.askForInput(
+          "FitGirl Repacks",
+          packages.length === 0
+            ? "Select the first update package (.rar or updater .exe). If this update requires earlier updates, select the oldest one first."
+            : `Selected ${packages.length} package(s). Add the next update package, or finish.`,
+          new ConfigurationBuilder()
+            .addStringOption((option) =>
+              option
+                .setName("packageFile")
+                .setDisplayName("Update Package")
+                .setDescription(
+                  "The downloaded update package (.rar or updater .exe)",
+                )
+                .setInputType("file"),
+            )
+            .addBooleanOption((option) =>
+              option
+                .setName("addAnother")
+                .setDisplayName("Add Another Package")
+                .setDescription(
+                  "Enable if the target version needs another update applied after this one.",
+                )
+                .setDefaultValue(false),
+            ),
+        )) as { packageFile: string; addAnother: boolean };
+
+        const resolved = resolveSelectedFilePath(picked.packageFile);
+        if (!resolved || !fs.existsSync(resolved)) {
+          event.fail("The selected update package does not exist.");
+          return;
+        }
+        packages.push(resolved);
+        addMore = picked.addAnother;
+      }
+
+      event.resolve({
+        name: "Local Update | " + info.name,
+        downloadType: "empty",
+        manifest: {
+          ...info.manifest,
+          packages,
+        },
+        clearOldFilesBeforeUpdate: false,
+      });
     } else if (info.manifest.service === "local") {
       // ask the user to select the setup.exe file
       const setupExe = (await event.askForInput(
@@ -1235,6 +1472,17 @@ addon.on("exit", () => {
 });
 
 addon.on("connect", async () => {
+  // make interrupted update transactions safe again before anything launches
+  for (const record of listInstalledRepacks()) {
+    try {
+      recoverUpdateTransaction(record.installDir, (message) =>
+        console.log(`[update-recovery] ${record.name}: ${message}`),
+      );
+    } catch (err) {
+      console.log(`[update-recovery] ${record.name} failed: ${err}`);
+    }
+  }
+
   // detect firstly if we can access fitigrl
   await new Promise<void>(async (resolve) => {
     axios
