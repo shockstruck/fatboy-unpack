@@ -1,9 +1,9 @@
 {
-  "author": "Fat-Addons",
-  "icon": "favicon.png",
-  "scripts": {
-    "preSetup": "bun --bun install --frozen-lockfile",
-    "run": "bun run ./src/main.ts",
-    "postSetup": "bun run ./remove-scrapes.script.ts"
-  }
+	"author": "Fat-Addons",
+	"icon": "favicon.png",
+	"scripts": {
+		"preSetup": "bun --bun install --frozen-lockfile",
+		"run": "bun run ./src/main.ts",
+		"postSetup": "bun run ./remove-scrapes.script.ts"
+	}
 }
