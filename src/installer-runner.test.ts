@@ -60,4 +60,22 @@ describe("installer runner", () => {
 			buildInstallerLaunchPlan(target, { platform: "linux" }),
 		).toThrow("UMU context");
 	});
+
+	test("omits component/task switches for updaters", () => {
+		const plan = buildInstallerLaunchPlan(target, {
+			platform: "win32",
+			baseEnv: {},
+		});
+		expect(plan.args.some((arg) => arg.startsWith("/COMPONENTS"))).toBe(false);
+		expect(plan.args.some((arg) => arg.startsWith("/TASKS"))).toBe(false);
+	});
+
+	test("selects components and deselects all tasks for initial installs", () => {
+		const plan = buildInstallerLaunchPlan(
+			{ ...target, components: ["text", "bonus"], tasks: [] },
+			{ platform: "win32", baseEnv: {} },
+		);
+		expect(plan.args).toContain("/COMPONENTS=text,bonus");
+		expect(plan.args).toContain("/TASKS=");
+	});
 });

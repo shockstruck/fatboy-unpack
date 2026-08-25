@@ -56,12 +56,25 @@ import {
 	sikarugirPrefix,
 	sikarugirWine,
 } from "./setup-runtime";
-import { toWinePath } from "./installer-runner";
+import {
+	buildInstallerLaunchPlan,
+	buildMuteAudioPlan,
+	runInstaller,
+	toWinePath,
+	type UmuContext,
+} from "./installer-runner";
 import { applyLocalUpdatePackages, installDirOf } from "./update-flow";
 import {
 	discardUpdateBackup,
 	recoverUpdateTransaction,
 } from "./update-transaction";
+import {
+	excludeOptionalBins,
+	sniffRepackBins,
+	type OptionalBinGroup,
+	type RepackBins,
+} from "./repack-bins";
+import { trackDirectoryGrowth } from "./install-progress";
 
 const UMU_BIN = join(
 	process.env.HOME! ?? "",
@@ -821,7 +834,6 @@ addon.on("setup", (data, event) => {
 				event.log(`Unrar completed for ${baseParts.length} archive(s)`);
 			} catch (error) {
 				event.fail(`Failed to extract downloaded files: ${String(error)}`);
-				resolve();
 				return;
 			}
 			// now delete the rar files
@@ -889,200 +901,187 @@ addon.on("setup", (data, event) => {
 				return;
 			}
 
-			let input:
-				| {
-						automate: boolean;
-						installDir: string;
-						addBonus: boolean;
-				  }
-				| undefined;
-			if (!runsSetupViaWine) {
-				const screen = new ConfigurationBuilder()
-					.addBooleanOption((option) =>
-						option
-							.setName("automate")
-							.setDisplayName("Automate Setup")
-							.setDescription(
-								"Automate the setup process (on Linux or macOS, manual setup is often more reliable).",
-							)
-							.setDefaultValue(true),
-					)
-					.addStringOption((option) =>
-						option
-							.setName("installDir")
-							.setDisplayName("Game Installation Directory")
-							.setDescription(
-								"Choose where you want to install the game (this should be different from where the setup files are located)",
-							)
-							.setDefaultValue(defaultInstallDir)
-							.setInputType("folder"),
-					);
+			const setupDir = dirname(setupExePath);
+			const bins = sniffRepackBins(setupDir);
+			const optionNameFor = (group: OptionalBinGroup): string =>
+				"optional_" + group.key.replaceAll("-", "_");
 
-				if (fs.existsSync(join(path, "fg-optional-bonus-content.bin"))) {
-					screen.addBooleanOption((option) =>
-						option
-							.setName("addBonus")
-							.setDisplayName("Add Bonus Content")
-							.setDescription(
-								"Add the optional bonus content to the installation",
-							),
-					);
-				}
-				input = (await event.askForInput(
-					"FitGirl Repacks",
-					"Setup your FitGirl Repack",
-					screen,
-				)) as {
-					automate: boolean;
-					installDir: string;
-					addBonus: boolean;
-				};
-			} else {
-				const screen = new ConfigurationBuilder()
-					.addBooleanOption((option) =>
-						option
-							.setName("automate")
-							.setDisplayName("Automate Setup")
-							.setDescription(
-								"Run the installer silently through OGI's Windows runtime.",
-							)
-							.setDefaultValue(true),
-					)
-					.addStringOption((option) =>
-						option
-							.setName("installDir")
-							.setDisplayName("Game Installation Directory")
-							.setDescription(
-								"Choose where you want to install the game (this should be different from where the setup files are located)",
-							)
-							.setDefaultValue(defaultInstallDir)
-							.setInputType("folder"),
-					);
-
-				const byUser = (await event.askForInput(
-					"FitGirl Repacks",
-					"Setup your FitGirl Repack",
-					screen,
-				)) as
-					| {
-						automate: boolean;
-						installDir: string;
-					  }
-					| undefined;
-				if (!byUser?.installDir) {
-					event.fail("Setup was cancelled before choosing an install directory.");
-					return;
-				}
-
-				input = {
-					automate: byUser.automate,
-					installDir: byUser.installDir,
-					addBonus: false,
-				};
+			const screen = new ConfigurationBuilder()
+				.addBooleanOption((option) =>
+					option
+						.setName("automate")
+						.setDisplayName("Automate Setup")
+						.setDescription(
+							"Silently run the installer straight into the chosen directory (skips redists, hosts-file tweaks, and the installer music).",
+						)
+						.setDefaultValue(true),
+				)
+				.addStringOption((option) =>
+					option
+						.setName("installDir")
+						.setDisplayName("Game Installation Directory")
+						.setDescription(
+							"Choose where you want to install the game (this should be different from where the setup files are located)",
+						)
+						.setDefaultValue(defaultInstallDir)
+						.setInputType("folder"),
+				);
+			for (const group of bins.optional) {
+				screen.addBooleanOption((option) =>
+					option
+						.setName(optionNameFor(group))
+						.setDisplayName("Include " + group.label)
+						.setDescription(
+							`Install the optional ${group.label} (${(group.size / 2 ** 30).toFixed(1)} GiB).`,
+						)
+						.setDefaultValue(false),
+				);
 			}
 
+			const input = (await event.askForInput(
+				"FitGirl Repacks",
+				"Setup your FitGirl Repack",
+				screen,
+			)) as
+				| ({ automate: boolean; installDir: string } & Record<
+						string,
+						boolean | string
+				  >)
+				| undefined;
 			if (!input?.installDir) {
 				event.fail("Setup was cancelled before choosing an install directory.");
 				return;
 			}
 
-			if (input.installDir) {
-				// check if the installDir is a valid path, then check if there is content inside the installDir
-				if (!fs.existsSync(input.installDir)) {
-					event.fail(
-						"Error: installDir is not a valid path. Please enter a valid path.",
-					);
-					return;
-				}
-				const existingFiles = fs
-					.readdirSync(input.installDir)
-					.filter((file) => file !== ".torrent" && file !== "old_files");
-				if (existingFiles.length !== 0 && path !== input.installDir) {
-					input.installDir = join(input.installDir, name);
-					event.log(
-						`installDir is not empty and path is not the same as installDir, so we will append the game name to the installDir to prevent deleting entire folder contents.`,
-					);
-				}
+			// check if the installDir is a valid path, then check if there is content inside the installDir
+			if (!fs.existsSync(input.installDir)) {
+				event.fail(
+					"Error: installDir is not a valid path. Please enter a valid path.",
+				);
+				return;
+			}
+			const existingFiles = fs
+				.readdirSync(input.installDir)
+				.filter((file) => file !== ".torrent" && file !== "old_files");
+			if (existingFiles.length !== 0 && path !== input.installDir) {
+				input.installDir = join(input.installDir, name);
+				event.log(
+					`installDir is not empty and path is not the same as installDir, so we will append the game name to the installDir to prevent deleting entire folder contents.`,
+				);
 			}
 
 			installDir = input.installDir as string;
-			const addBonus = (input.addBonus as boolean) ?? false;
-			const setupINF = makeSetupINF(
-				runsSetupViaWine ? toWinePath(installDir) : installDir,
-				addBonus,
+			const includedOptional = bins.optional.filter(
+				(group) => input[optionNameFor(group)] === true,
+			);
+			const excludedOptional = bins.optional.filter(
+				(group) => input[optionNameFor(group)] !== true,
 			);
 
-			// add a directory to the path called 'INSTALL HERE'
-			if (runsSetupViaWine) {
+			// The manual Wine flow installs into a staging folder first; the
+			// silent flow writes straight into the target.
+			if (runsSetupViaWine && !input.automate) {
 				fs.mkdirSync(join(installDir, "INSTALL HERE"), { recursive: true });
 			}
 
 			if (input.automate) {
-				const setupINFPath = join(path, "fatboy-setup.inf");
-				fs.writeFileSync(setupINFPath, setupINF);
-				event.log(`Setup INI file created at ${setupINFPath}`);
-				event.log(`Opening setup.exe with INI file`);
-				if (process.platform === "win32") {
-					try {
-						execSync(`"${setupExePath}" /SILENT /LOADINF=fatboy-setup.inf`, {
-							cwd: path,
-						});
-					} catch (_err) {
-						event.fail(
-							"Error opening setup.exe. It's possible that Windows quarantined the file. Please try again.",
-						);
-						return;
-					}
-				} else if (runsSetupViaWine) {
+				fs.mkdirSync(installDir, { recursive: true });
+				const restoreBins = excludeOptionalBins(setupDir, excludedOptional);
+				const stopTracking = trackDirectoryGrowth(
+					installDir,
+					estimateInstalledBytes(bins, includedOptional),
+					(progress) => {
+						event.progress = progress;
+					},
+				);
+				try {
 					if (useSikarugir) {
-						try {
-							execFileSync(
-								sikarugirWineBin,
-								[
-									setupExePath,
-									"/SP-",
-									"/VERYSILENT",
-									"/SUPPRESSMSGBOXES",
-									"/NORESTART",
-									"/LANG=en",
-									`/LOADINF=${toWinePath(setupINFPath)}`,
-								],
-								{
-									cwd: path,
-									env: {
-										...process.env,
-										DYLD_FALLBACK_LIBRARY_PATH: sikarugirFrameworkPath,
-										WINEPREFIX: sikarugirWinePrefix,
-									},
-									stdio: "inherit",
+						// Sikarugir ships its own Wine; drive the silent install
+						// through an INF instead of the umu launch plan.
+						const setupINFPath = join(path, "fatboy-setup.inf");
+						fs.writeFileSync(
+							setupINFPath,
+							makeSetupINF(
+								toWinePath(installDir),
+								includedOptional.length > 0,
+							),
+						);
+						event.log(`Setup INF file created at ${setupINFPath}`);
+						event.log(
+							"Running the repack installer silently. Progress is estimated from the install directory's growth on disk.",
+						);
+						execFileSync(
+							sikarugirWineBin,
+							[
+								setupExePath,
+								"/SP-",
+								"/VERYSILENT",
+								"/SUPPRESSMSGBOXES",
+								"/NORESTART",
+								"/LANG=en",
+								`/LOADINF=${toWinePath(setupINFPath)}`,
+							],
+							{
+								cwd: path,
+								env: {
+									...process.env,
+									DYLD_FALLBACK_LIBRARY_PATH: sikarugirFrameworkPath,
+									WINEPREFIX: sikarugirWinePrefix,
 								},
-							);
-						} catch {
-							event.fail(
-								"Error opening setup.exe via Sikarugir. Check OGI's Windows support setup and try again.",
-							);
-							return;
+								stdio: "inherit",
+							},
+						);
+					} else {
+						const umu: UmuContext | undefined = runsSetupViaWine
+							? {
+									umuRunPath: UMU_BIN,
+									gameId: `umu-${appID}`,
+									winePrefix: winePrefixDir,
+								}
+							: undefined;
+						if (umu) {
+							// FitGirl's installer music comes from its own audio code, so
+							// /VERYSILENT alone is not a guaranteed mute; killing the Wine
+							// audio driver in the install prefix is.
+							event.log("Muting audio in the installer's Wine prefix...");
+							await runInstaller(buildMuteAudioPlan(umu));
 						}
-					} else if (wineSource === "umu" || wineSource === "flatpak") {
-						try {
-							execSync(
-								`${UMU_BIN} "${setupExePath}" /SILENT /LOADINF=fatboy-setup.inf`,
-								{
-									cwd: path,
-									env: {
-										WINEPREFIX: winePrefixDir,
-										...process.env,
-									} as Record<string, string>,
-									stdio: "inherit",
-								},
-							);
-						} catch {
+
+						const plan = buildInstallerLaunchPlan(
+							{
+								installerExe: setupExePath,
+								installDir,
+								logFile: join(setupDir, "fatboy-install.log"),
+								components: componentCandidates(includedOptional),
+								tasks: [],
+							},
+							{ platform: process.platform, umu },
+						);
+						event.log(
+							"Running the repack installer silently. Progress is estimated from the install directory's growth on disk.",
+						);
+						const result = await runInstaller(plan, (line) => {
+							const trimmed = line.trim();
+							if (trimmed) event.log(trimmed);
+						});
+						if (result.exitCode !== 0) {
 							event.fail(
-								"Error opening setup.exe via Wine. Check that Wine/UMU is installed and try again.",
+								`The repack installer exited with code ${result.exitCode}. ` +
+									`Check ${join(setupDir, "fatboy-install.log")} for details.`,
 							);
 							return;
 						}
 					}
+					event.progress = 100;
+					event.log("Repack installer finished.");
+				} catch (err) {
+					event.fail(
+						`Error running setup.exe${runsSetupViaWine ? (useSikarugir ? " via Sikarugir" : " via Wine/UMU") : ""}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+					return;
+				} finally {
+					stopTracking();
+					restoreBins();
 				}
 			} else {
 				event.log(`Opening setup.exe`);
@@ -1980,4 +1979,43 @@ SetupType=custom
 Components=text${addBonus ? ",bonus" : ""}
 Tasks=
 `;
+}
+
+/**
+ * Component names FitGirl installers commonly use. Inno ignores names the
+ * installer does not define, so over-listing is safe; the point is to select
+ * the game payload while leaving DirectX/redist components deselected.
+ */
+function componentCandidates(includedOptional: OptionalBinGroup[]): string[] {
+	return [
+		"text",
+		"game",
+		"main",
+		...includedOptional.map((group) => group.key),
+		...(includedOptional.length > 0 ? ["bonus"] : []),
+	].filter((value, index, all) => all.indexOf(value) === index);
+}
+
+/**
+ * Silent installs report progress by watching the install dir grow, so we
+ * need a target size. FitGirl compresses roughly 1.5-3x; doubling the bin
+ * payload is a deliberate overshoot — progress lands short of 100 rather
+ * than pinning at 99 early.
+ */
+function estimateInstalledBytes(
+	bins: RepackBins,
+	includedOptional: OptionalBinGroup[],
+): number {
+	const selectiveSize = bins.selective.reduce(
+		(total, group) => total + group.size,
+		0,
+	);
+	const optionalSize = includedOptional.reduce(
+		(total, group) => total + group.size,
+		0,
+	);
+	return Math.max(
+		(bins.requiredSize + selectiveSize + optionalSize) * 2,
+		2 ** 30,
+	);
 }
