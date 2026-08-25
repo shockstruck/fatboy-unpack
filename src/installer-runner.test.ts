@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	buildInstallerLaunchPlan,
 	convertUmuIdToGameId,
+	removeFitgirlHostsEntries,
 	toWinePath,
 } from "./installer-runner";
 
@@ -77,5 +81,34 @@ describe("installer runner", () => {
 		);
 		expect(plan.args).toContain("/COMPONENTS=text,bonus");
 		expect(plan.args).toContain("/TASKS=");
+	});
+
+	test("scrubs fitgirl hosts entries from a proton prefix", () => {
+		const prefix = fs.mkdtempSync(join(tmpdir(), "fatboy-hosts-"));
+		const etcDir = join(
+			prefix,
+			"pfx",
+			"drive_c",
+			"windows",
+			"system32",
+			"drivers",
+			"etc",
+		);
+		fs.mkdirSync(etcDir, { recursive: true });
+		const hostsPath = join(etcDir, "hosts");
+		fs.writeFileSync(
+			hostsPath,
+			"127.0.0.1 localhost\n0.0.0.0 fitgirl-repacks.com\n0.0.0.0 fitgirl-repack.site\n",
+		);
+		try {
+			expect(removeFitgirlHostsEntries({ winePrefix: prefix })).toBe(true);
+			expect(fs.readFileSync(hostsPath, "utf-8")).toBe(
+				"127.0.0.1 localhost\n",
+			);
+			// Idempotent: nothing left to remove on a second pass.
+			expect(removeFitgirlHostsEntries({ winePrefix: prefix })).toBe(false);
+		} finally {
+			fs.rmSync(prefix, { recursive: true, force: true });
+		}
 	});
 });

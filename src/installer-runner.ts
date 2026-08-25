@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { dirname } from "node:path";
+import fs from "node:fs";
+import { dirname, join } from "node:path";
 
 // Runs Inno Setup installers — FitGirl initial setups and the ElAmigos/FitGirl
 // update family — natively on Windows or through OGI's bundled umu-run on
@@ -118,6 +119,63 @@ export function buildMuteAudioPlan(
 		cwd: "/",
 		env: buildUmuEnv(umu, baseEnv ?? (process.env as Record<string, string>)),
 	};
+}
+
+/**
+ * FitGirl's finish-page steps (fake-sites hosts entries, launch game, admin
+ * rights) are postinstall [Run] entries, not [Tasks], so /TASKS= never reaches
+ * them — and Inno executes checked-by-default postinstall entries even under
+ * /VERYSILENT (issrc Setup.MainForm.pas: Finish -> ProcessPostInstallRunEntries
+ * runs every RunList.Checked entry regardless of InstallMode; only skipifsilent
+ * or unchecked entries escape). No CLI switch suppresses them, so we scrub the
+ * hosts write afterwards. Under Wine it only ever lands in the prefix's hosts
+ * file — never /etc/hosts — and Wine resolves names through the host libc, so
+ * the entries are inert anyway; removing them just keeps the prefix clean.
+ */
+export function removeFitgirlHostsEntries(options: {
+	/** Wine prefix the installer ran in; omit for native Windows installs. */
+	winePrefix?: string;
+}): boolean {
+	const hostsSuffix = [
+		"drive_c",
+		"windows",
+		"system32",
+		"drivers",
+		"etc",
+		"hosts",
+	];
+	// Proton prefixes (umu) nest the Wine prefix under pfx/; Sikarugir and
+	// plain Wine keep drive_c at the top. Native Windows writes the real file.
+	const candidates = options.winePrefix
+		? [
+				join(options.winePrefix, "pfx", ...hostsSuffix),
+				join(options.winePrefix, ...hostsSuffix),
+			]
+		: [
+				join(
+					process.env.SystemRoot ?? "C:\\Windows",
+					"System32",
+					"drivers",
+					"etc",
+					"hosts",
+				),
+			];
+	let removedAny = false;
+	for (const hostsPath of candidates) {
+		let content: string;
+		try {
+			content = fs.readFileSync(hostsPath, "utf-8");
+		} catch {
+			continue;
+		}
+		const lines = content.split("\n");
+		const kept = lines.filter((line) => !/fitgirl/i.test(line));
+		if (kept.length !== lines.length) {
+			fs.writeFileSync(hostsPath, kept.join("\n"));
+			removedAny = true;
+		}
+	}
+	return removedAny;
 }
 
 /**

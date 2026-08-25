@@ -59,6 +59,7 @@ import {
 import {
 	buildInstallerLaunchPlan,
 	buildMuteAudioPlan,
+	removeFitgirlHostsEntries,
 	runInstaller,
 	toWinePath,
 	type UmuContext,
@@ -1090,6 +1091,23 @@ addon.on("setup", (data, event) => {
 							);
 							return;
 						}
+					}
+					// The fake-sites hosts step is a checked-by-default postinstall
+					// [Run] entry, which Inno executes even under /VERYSILENT and
+					// no switch suppresses; scrub its entries after the fact.
+					const scrubbed = removeFitgirlHostsEntries(
+						runsSetupViaWine
+							? {
+									winePrefix: useSikarugir
+										? sikarugirWinePrefix
+										: winePrefixDir,
+								}
+							: {},
+					);
+					if (scrubbed) {
+						event.log(
+							"Removed the installer's fake-FitGirl-sites hosts entries.",
+						);
 					}
 					event.progress = 100;
 					event.log("Repack installer finished.");
