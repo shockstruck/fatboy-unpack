@@ -21,8 +21,8 @@ function isDownloadOrContainerUrl(url: string): boolean {
 		const parsed = new URL(url);
 		return (
 			/filecrypt\./i.test(parsed.hostname) ||
-			/\.(rar|zip|7z|iso)$/i.test(parsed.pathname) ||
-			/\.part\d+\.rar$/i.test(parsed.pathname)
+			/\.(rar|zip|7z|iso)$/i.test(parsed.pathname + parsed.hash) ||
+			/\.part\d+\.rar$/i.test(parsed.pathname + parsed.hash)
 		);
 	} catch {
 		return false;

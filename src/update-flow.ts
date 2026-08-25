@@ -21,8 +21,13 @@ export type UpdateExecutionContext = {
 	homeDir: string;
 };
 
+export type UpdateLibraryInfo = Pick<
+	LibraryInfo,
+	"appID" | "cwd" | "launchExecutable" | "umu"
+>;
+
 function buildUmuContext(
-	libraryInfo: LibraryInfo,
+	libraryInfo: UpdateLibraryInfo,
 	context: UpdateExecutionContext,
 ): UmuContext {
 	const umuId = libraryInfo.umu?.umuId ?? `umu:${libraryInfo.appID}`;
@@ -38,7 +43,7 @@ function buildUmuContext(
 }
 
 /** Resolves the installation directory the update must patch. */
-export function installDirOf(libraryInfo: LibraryInfo): string {
+export function installDirOf(libraryInfo: UpdateLibraryInfo): string {
 	return libraryInfo.cwd;
 }
 
@@ -48,7 +53,7 @@ export async function applyLocalUpdatePackages(options: {
 	/** Downloaded files OGI placed in the live directory for this update. */
 	downloadArtifacts?: string[];
 	targetVersion: string;
-	currentLibraryInfo: LibraryInfo;
+	currentLibraryInfo: UpdateLibraryInfo;
 	context: UpdateExecutionContext;
 	log: (message: string) => void;
 }): Promise<{ backupDir: string }> {

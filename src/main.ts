@@ -1,7 +1,7 @@
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import axios from "axios";
 import { JSDOM } from "jsdom";
@@ -30,6 +30,7 @@ import { type GameInfo, parseGameMetadataHtml } from "./fitgirl-metadata";
 import {
 	type DownloadedUpdateGroup,
 	FITGIRL_UPDATES_URL,
+	type FitGirlUpdate,
 	inferUpdateTargetVersion,
 	parseFitGirlUpdates,
 	resolveDownloadedUpdatePackages,
@@ -48,6 +49,14 @@ import {
 	updateCookieString,
 } from "./scraper";
 import { findBestGameMatch, type Game } from "./string-similarity";
+import {
+	defaultInstallDirectory,
+	sikarugirFrameworks,
+	sikarugirLauncher,
+	sikarugirPrefix,
+	sikarugirWine,
+} from "./setup-runtime";
+import { toWinePath } from "./installer-runner";
 import { applyLocalUpdatePackages, installDirOf } from "./update-flow";
 import {
 	discardUpdateBackup,
@@ -224,21 +233,17 @@ addon.on("search", (data, event) => {
 
 		// direct service - FuckingFast
 		console.log("direct services", gameMetaData.directLinks);
-		if (
-			gameMetaData.directLinks?.some(
+		const fuckingFastLinks =
+			gameMetaData.directLinks?.find(
 				(directLink) => directLink.service === "FuckingFast",
-			)
-		) {
-			const links =
-				gameMetaData.directLinks.find(
-					(directLink) => directLink.service === "FuckingFast",
-				)?.links ?? [];
+			)?.links ?? [];
+		if (fuckingFastLinks.length > 0) {
 			results.push({
 				name: `FuckingFast | ${gameMetaData.name}`,
 				downloadType: "request",
 				manifest: {
 					service: "FuckingFast",
-					links: links.map((link) => ({
+					links: fuckingFastLinks.map((link) => ({
 						name: link.name,
 						url: link.url,
 					})),
@@ -246,6 +251,7 @@ addon.on("search", (data, event) => {
 					// fuzzy-match installed games again.
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
+					fitgirlGameName: game.name,
 				},
 			});
 		}
@@ -273,6 +279,7 @@ addon.on("search", (data, event) => {
 					links: fileCryptLinks,
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
+					fitgirlGameName: game.name,
 				},
 			});
 		}
@@ -455,6 +462,8 @@ type SetupManifest = {
 	service?: string;
 	setupExe?: string;
 	pathOfSetupExe?: string;
+	installUpdateGroups?: DownloadedUpdateGroup[];
+	installUpdateTargetVersion?: string;
 };
 
 function resolveSelectedFilePath(
@@ -596,6 +605,12 @@ async function resolveFitgirlSetupExe(
 	if (exes.length === 1) {
 		return exes[0];
 	}
+	const exactSetupExecutables = exes.filter(
+		(exe) => basename(exe).toLowerCase() === "setup.exe",
+	);
+	if (exactSetupExecutables.length === 1) {
+		return exactSetupExecutables[0];
+	}
 
 	const picked = (await event.askForInput(
 		"FitGirl Repacks",
@@ -733,6 +748,11 @@ addon.on("setup", (data, event) => {
 	// check if wine is instaleld in that source by running the help command check if it fails
 
 	void (async () => {
+		const setupManifest = manifest as SetupManifest | undefined;
+		const installUpdateGroups = setupManifest?.installUpdateGroups ?? [];
+		const updateFileNames = new Set(
+			installUpdateGroups.flatMap((group) => group.files),
+		);
 		// this was a direct download, we need to multipart unrar these files
 		event.log(type);
 		if (manifest && manifest.service === "local") {
@@ -774,7 +794,10 @@ addon.on("setup", (data, event) => {
 			);
 			try {
 				// Direct hosters use synthetic partN.rar names for independent archives.
-				const extractionJobs: ExtractionJob[] = multiPartFiles.map((part) => {
+				const baseParts = multiPartFiles.filter(
+					(part) => !updateFileNames.has(part.name),
+				);
+				const extractionJobs: ExtractionJob[] = baseParts.map((part) => {
 					const filePath = join(path, part.name);
 					const size = Math.max(fs.statSync(filePath).size, 1);
 					return process.platform === "win32"
@@ -795,7 +818,7 @@ addon.on("setup", (data, event) => {
 				await extractAllWithProgress(extractionJobs, (progress) => {
 					event.progress = progress;
 				});
-				event.log(`Unrar completed for ${multiPartFiles.length} archive(s)`);
+				event.log(`Unrar completed for ${baseParts.length} archive(s)`);
 			} catch (error) {
 				event.fail(`Failed to extract downloaded files: ${String(error)}`);
 				resolve();
@@ -803,7 +826,9 @@ addon.on("setup", (data, event) => {
 			}
 			// now delete the rar files
 			event.log("Deleting rar files..");
-			for (const part of multiPartFiles) {
+			for (const part of multiPartFiles.filter(
+				(part) => !updateFileNames.has(part.name),
+			)) {
 				const filePath = join(path, part.name);
 				try {
 					if (fs.existsSync(filePath)) {
@@ -845,6 +870,15 @@ addon.on("setup", (data, event) => {
 			const homeDir = process.env.HOME || process.env.USERPROFILE || "~/";
 			const winePrefixDir = join(homeDir, ".wine-fitgirl");
 			const runsSetupViaWine = process.platform !== "win32";
+			const defaultInstallDir = defaultInstallDirectory(path);
+			const sikarugirBin = sikarugirLauncher(homeDir);
+			const sikarugirWineBin = sikarugirWine(homeDir);
+			const sikarugirWinePrefix = sikarugirPrefix(homeDir);
+			const sikarugirFrameworkPath = sikarugirFrameworks(homeDir);
+			const useSikarugir =
+				process.platform === "darwin" &&
+				fs.existsSync(sikarugirBin) &&
+				fs.existsSync(sikarugirWineBin);
 
 			const setupExePath = await resolveFitgirlSetupExe(
 				path,
@@ -880,7 +914,7 @@ addon.on("setup", (data, event) => {
 							.setDescription(
 								"Choose where you want to install the game (this should be different from where the setup files are located)",
 							)
-							.setDefaultValue(path)
+							.setDefaultValue(defaultInstallDir)
 							.setInputType("folder"),
 					);
 
@@ -904,30 +938,52 @@ addon.on("setup", (data, event) => {
 					addBonus: boolean;
 				};
 			} else {
-				const screen = new ConfigurationBuilder().addStringOption((option) =>
-					option
-						.setName("installDir")
-						.setDisplayName("Game Installation Directory")
-						.setDescription(
-							"Choose where you want to install the game (this should be different from where the setup files are located)",
-						)
-						.setDefaultValue(path)
-						.setInputType("folder"),
-				);
+				const screen = new ConfigurationBuilder()
+					.addBooleanOption((option) =>
+						option
+							.setName("automate")
+							.setDisplayName("Automate Setup")
+							.setDescription(
+								"Run the installer silently through OGI's Windows runtime.",
+							)
+							.setDefaultValue(true),
+					)
+					.addStringOption((option) =>
+						option
+							.setName("installDir")
+							.setDisplayName("Game Installation Directory")
+							.setDescription(
+								"Choose where you want to install the game (this should be different from where the setup files are located)",
+							)
+							.setDefaultValue(defaultInstallDir)
+							.setInputType("folder"),
+					);
 
 				const byUser = (await event.askForInput(
 					"FitGirl Repacks",
 					"Setup your FitGirl Repack",
 					screen,
-				)) as {
-					installDir: string;
-				};
+				)) as
+					| {
+						automate: boolean;
+						installDir: string;
+					  }
+					| undefined;
+				if (!byUser?.installDir) {
+					event.fail("Setup was cancelled before choosing an install directory.");
+					return;
+				}
 
 				input = {
-					automate: false,
+					automate: byUser.automate,
 					installDir: byUser.installDir,
 					addBonus: false,
 				};
+			}
+
+			if (!input?.installDir) {
+				event.fail("Setup was cancelled before choosing an install directory.");
+				return;
 			}
 
 			if (input.installDir) {
@@ -938,10 +994,10 @@ addon.on("setup", (data, event) => {
 					);
 					return;
 				}
-				if (
-					fs.readdirSync(input.installDir).length !== 0 &&
-					path !== input.installDir
-				) {
+				const existingFiles = fs
+					.readdirSync(input.installDir)
+					.filter((file) => file !== ".torrent" && file !== "old_files");
+				if (existingFiles.length !== 0 && path !== input.installDir) {
 					input.installDir = join(input.installDir, name);
 					event.log(
 						`installDir is not empty and path is not the same as installDir, so we will append the game name to the installDir to prevent deleting entire folder contents.`,
@@ -951,7 +1007,10 @@ addon.on("setup", (data, event) => {
 
 			installDir = input.installDir as string;
 			const addBonus = (input.addBonus as boolean) ?? false;
-			const setupINF = makeSetupINF(installDir, addBonus);
+			const setupINF = makeSetupINF(
+				runsSetupViaWine ? toWinePath(installDir) : installDir,
+				addBonus,
+			);
 
 			// add a directory to the path called 'INSTALL HERE'
 			if (runsSetupViaWine) {
@@ -975,7 +1034,36 @@ addon.on("setup", (data, event) => {
 						return;
 					}
 				} else if (runsSetupViaWine) {
-					if (wineSource === "umu" || wineSource === "flatpak") {
+					if (useSikarugir) {
+						try {
+							execFileSync(
+								sikarugirWineBin,
+								[
+									setupExePath,
+									"/SP-",
+									"/VERYSILENT",
+									"/SUPPRESSMSGBOXES",
+									"/NORESTART",
+									"/LANG=en",
+									`/LOADINF=${toWinePath(setupINFPath)}`,
+								],
+								{
+									cwd: path,
+									env: {
+										...process.env,
+										DYLD_FALLBACK_LIBRARY_PATH: sikarugirFrameworkPath,
+										WINEPREFIX: sikarugirWinePrefix,
+									},
+									stdio: "inherit",
+								},
+							);
+						} catch {
+							event.fail(
+								"Error opening setup.exe via Sikarugir. Check OGI's Windows support setup and try again.",
+							);
+							return;
+						}
+					} else if (wineSource === "umu" || wineSource === "flatpak") {
 						try {
 							execSync(
 								`${UMU_BIN} "${setupExePath}" /SILENT /LOADINF=fatboy-setup.inf`,
@@ -1046,7 +1134,34 @@ addon.on("setup", (data, event) => {
 					}
 					event.log(`Acknowledged`);
 					let forceStop = false;
-					if (wineSource === "umu" || wineSource === "flatpak") {
+					if (useSikarugir) {
+						try {
+							await new Promise<string>((resolve, reject) =>
+								spawnAndHook(
+									{
+										cwd: path,
+										stdout: (data: string) => event.log(data),
+										stderr: (data: string) => event.log(data),
+										onClose: (code: number) =>
+											code === 0
+												? resolve("Process completed successfully")
+												: reject(
+														new Error(`Process exited with code ${code}`),
+													),
+										onError: (err: Error) => reject(err),
+									},
+									sikarugirBin,
+									["WSS-installer", setupExePath],
+								),
+							);
+						} catch (err) {
+							event.log(`Error opening setup.exe: ${err}`);
+							event.fail(
+								"Error opening setup.exe via Sikarugir. Check OGI's Windows support setup and try again.",
+							);
+							forceStop = true;
+						}
+					} else if (wineSource === "umu" || wineSource === "flatpak") {
 						try {
 							await new Promise<string>((resolve, reject) =>
 								spawnAndHook(
@@ -1111,12 +1226,12 @@ addon.on("setup", (data, event) => {
 							return;
 						}
 
-						// delete all other files and folders in the path except the 'INSTALL HERE' directory
+						// Keep downloaded update packages until they are staged below.
 						event.log(
-							`Deleting all other files and folders in the path except the 'INSTALL HERE' directory`,
+							`Cleaning setup files while preserving automatic update packages`,
 						);
 						fs.readdirSync(path).forEach((file) => {
-							if (file !== "INSTALL HERE") {
+							if (file !== "INSTALL HERE" && !updateFileNames.has(file)) {
 								const fullPath = join(path, file);
 								const stat = fs.lstatSync(fullPath);
 								if (stat.isDirectory()) {
@@ -1339,7 +1454,61 @@ addon.on("setup", (data, event) => {
 		// The installed version comes from the repack release itself, never
 		// Steam's latestVersion; "unknown" is honest when the source omits one.
 		const sourceRelease = manifest?.fitgirlRelease as string | undefined;
-		const version = extractRepackVersion(sourceRelease);
+		const baseVersion = extractRepackVersion(sourceRelease);
+		let version = baseVersion;
+		let pendingBackupDir: string | undefined;
+		const appliedUpdates: {
+			version: string;
+			packages: string[];
+			appliedAt: string;
+		}[] = [];
+		if (installUpdateGroups.length > 0) {
+			const packages = resolveDownloadedUpdatePackages(
+				path,
+				installUpdateGroups,
+			);
+			const targetVersion =
+				setupManifest?.installUpdateTargetVersion ?? baseVersion;
+			try {
+				event.log(
+					`Applying ${packages.length} FitGirl update package(s) before finishing installation...`,
+				);
+				const result = await applyLocalUpdatePackages({
+					packages,
+					downloadArtifacts: installUpdateGroups
+						.flatMap((group) => group.files)
+						.map((file) => join(path, file)),
+					targetVersion,
+					currentLibraryInfo: {
+						appID,
+						cwd: installDir,
+						launchExecutable: relative(
+							installDir,
+							gameExecutable.gameExecutable,
+						),
+						umu: { umuId: `steam:${appID}` },
+					},
+					context: {
+						platform: process.platform,
+						umuRunPath: UMU_BIN,
+						homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
+					},
+					log: (message) => event.log(message),
+				});
+				version = targetVersion;
+				pendingBackupDir = result.backupDir;
+				appliedUpdates.push({
+					version: targetVersion,
+					packages,
+					appliedAt: new Date().toISOString(),
+				});
+			} catch (error) {
+				event.fail(
+					`The base game installed, but its automatic updates failed safely: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return;
+			}
+		}
 		saveInstalledRepack({
 			appID,
 			storefront,
@@ -1348,7 +1517,8 @@ addon.on("setup", (data, event) => {
 			sourceRelease,
 			installDir,
 			installedVersion: version,
-			appliedUpdates: [],
+			pendingBackupDir,
+			appliedUpdates,
 		});
 		event.resolve({
 			cwd: gameExecutable.workingDir as string,
@@ -1364,6 +1534,65 @@ addon.on("setup", (data, event) => {
 	})();
 });
 
+type DirectDownloadFile = { name: string; downloadURL: string };
+
+async function resolveAutomaticFitGirlUpdates(
+	gameName: string,
+	log: (message: string) => void,
+	knownUpdates?: FitGirlUpdate[],
+): Promise<{
+	files: DirectDownloadFile[];
+	groups: DownloadedUpdateGroup[];
+	targetVersion?: string;
+}> {
+	const updates =
+		knownUpdates ??
+		parseFitGirlUpdates(
+			(await axiosGetWithDDOSGuard(addon, FITGIRL_UPDATES_URL, {})).data,
+			gameName,
+		);
+	const files: DirectDownloadFile[] = [];
+	const groups: DownloadedUpdateGroup[] = [];
+
+	for (const [groupIndex, update] of updates.entries()) {
+		log(`Resolving update ${groupIndex + 1}/${updates.length}: ${update.name}`);
+		const unlocked = await unlockFileCryptContainer(update.url, {
+			request: requestFileCryptResource,
+			renderContainer: renderFileCryptContainer,
+		});
+		const supportedLinks = unlocked.filter((link) => {
+			try {
+				return resolveServiceFromUrl(link.url).name === "FuckingFast";
+			} catch {
+				return false;
+			}
+		});
+		if (supportedLinks.length === 0) {
+			throw new Error(`No supported FuckingFast files found for ${update.name}`);
+		}
+
+		const resolved = await resolveFuckingFastUpdateFiles(
+			supportedLinks,
+			catchDownload,
+		);
+		const groupFiles = resolved.map((file) => ({
+			...file,
+			name: `update${groupIndex}-${file.name}`,
+		}));
+		files.push(...groupFiles);
+		groups.push({ files: groupFiles.map((file) => file.name) });
+	}
+
+	return {
+		files,
+		groups,
+		targetVersion:
+			updates.length > 0
+				? inferUpdateTargetVersion(updates.at(-1)?.name)
+				: undefined,
+	};
+}
+
 addon.on("request-dl", (appID, info, event) => {
 	event.defer(async () => {
 		if (!info.manifest) {
@@ -1374,7 +1603,7 @@ addon.on("request-dl", (appID, info, event) => {
 		if (info.manifest.service === "FuckingFast") {
 			const links = info.manifest.links as { name: string; url: string }[];
 			try {
-				const files = await resolveFuckingFastFiles(
+				const baseFiles = await resolveFuckingFastFiles(
 					links,
 					catchDownload,
 					(found, total) =>
@@ -1384,10 +1613,19 @@ addon.on("request-dl", (appID, info, event) => {
 							type: "success",
 						}),
 				);
+				const updates = await resolveAutomaticFitGirlUpdates(
+					(info.manifest.fitgirlGameName as string | undefined) ?? info.name,
+					(message) => event.log(message),
+				);
 				event.resolve({
 					name: `FuckingFast | ${info.name}`,
 					downloadType: "direct",
-					files,
+					files: [...baseFiles, ...updates.files],
+					manifest: {
+						...info.manifest,
+						installUpdateGroups: updates.groups,
+						installUpdateTargetVersion: updates.targetVersion,
+					},
 				});
 			} catch (error) {
 				event.fail(error instanceof Error ? error.message : String(error));
@@ -1423,7 +1661,7 @@ addon.on("request-dl", (appID, info, event) => {
 						"FileCrypt container did not contain supported FuckingFast links",
 					);
 				}
-				const files = await resolveFuckingFastFiles(
+				const baseFiles = await resolveFuckingFastFiles(
 					fuckingFastLinks,
 					catchDownload,
 					(found, total) =>
@@ -1433,10 +1671,19 @@ addon.on("request-dl", (appID, info, event) => {
 							type: "success",
 						}),
 				);
+				const updates = await resolveAutomaticFitGirlUpdates(
+					(info.manifest.fitgirlGameName as string | undefined) ?? info.name,
+					(message) => event.log(message),
+				);
 				event.resolve({
 					name: `FileCrypt | ${info.name}`,
 					downloadType: "direct",
-					files,
+					files: [...baseFiles, ...updates.files],
+					manifest: {
+						...info.manifest,
+						installUpdateGroups: updates.groups,
+						installUpdateTargetVersion: updates.targetVersion,
+					},
 				});
 			} catch (error) {
 				event.fail(error instanceof Error ? error.message : String(error));
@@ -1449,50 +1696,22 @@ addon.on("request-dl", (appID, info, event) => {
 			}
 
 			try {
-				const files: { name: string; downloadURL: string }[] = [];
-				const groups: DownloadedUpdateGroup[] = [];
-				for (const [groupIndex, update] of updates.entries()) {
-					event.log(
-						`Resolving update ${groupIndex + 1}/${updates.length}: ${update.name}`,
-					);
-					const unlocked = await unlockFileCryptContainer(update.url, {
-						request: requestFileCryptResource,
-						renderContainer: renderFileCryptContainer,
-					});
-					const fuckingFastLinks = unlocked.filter((link) => {
-						try {
-							return resolveServiceFromUrl(link.url).name === "FuckingFast";
-						} catch {
-							return false;
-						}
-					});
-					if (fuckingFastLinks.length === 0) {
-						throw new Error(
-							`No supported FuckingFast files found for ${update.name}`,
-						);
-					}
-					const resolved = await resolveFuckingFastUpdateFiles(
-						fuckingFastLinks,
-						catchDownload,
-					);
-					const groupFiles = resolved.map((file) => ({
-						...file,
-						name: `update${groupIndex}-${file.name}`,
-					}));
-					files.push(...groupFiles);
-					groups.push({ files: groupFiles.map((file) => file.name) });
-				}
+				const resolvedUpdates = await resolveAutomaticFitGirlUpdates(
+					info.name,
+					(message) => event.log(message),
+					updates,
+				);
 				event.resolve({
 					name: `FileCrypt Updates | ${info.name}`,
 					downloadType: "direct",
-					files,
+					files: resolvedUpdates.files,
 					manifest: {
 						...info.manifest,
 						service: "filecrypt-update",
-						groups,
+						groups: resolvedUpdates.groups,
 						targetVersion:
 							(info.manifest.targetVersion as string | undefined) ??
-							inferUpdateTargetVersion(updates.at(-1)?.name),
+							resolvedUpdates.targetVersion,
 					},
 					clearOldFilesBeforeUpdate: false,
 				});
@@ -1736,7 +1955,11 @@ export async function scrapeGameMetadata(
 	const cachePath = `./repack-data-scrapes/${hash}.json`;
 
 	if (fs.existsSync(cachePath)) {
-		return JSON.parse(fs.readFileSync(cachePath, "utf-8")) as GameInfo;
+		const cached = JSON.parse(fs.readFileSync(cachePath, "utf-8")) as GameInfo;
+		const hasLegacyEmptyFuckingFast = cached.directLinks.some(
+			(link) => link.service === "FuckingFast" && link.links.length === 0,
+		);
+		if (!hasLegacyEmptyFuckingFast) return cached;
 	}
 
 	const response = await axiosGetWithDDOSGuard(addon, game.url, {});

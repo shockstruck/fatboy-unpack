@@ -183,6 +183,32 @@ describe("parseGameMetadataHtml", () => {
 			},
 		]);
 	});
+
+	test("keeps archive names carried in a hoster URL fragment", () => {
+		const html = `
+			<article class="entry-content">
+				<h3>Download Mirrors (Direct Links)</h3>
+				<ul><li>
+					<a href="#fast">Filehoster: FuckingFast</a>
+					<div class="su-spoiler-content">
+						<a href="https://fuckingfast.co/abc#Game.part01.rar">Part 1</a>
+					</div>
+				</li></ul>
+			</article>
+		`;
+
+		const metadata = parseGameMetadataHtml(
+			{ name: "Game", url: "https://fitgirl.example/game" },
+			html,
+		);
+
+		expect(metadata.directLinks[0]?.links).toEqual([
+			{
+				name: "Part 1",
+				url: "https://fuckingfast.co/abc#Game.part01.rar",
+			},
+		]);
+	});
 });
 
 describe("resolveFuckingFastFiles", () => {
