@@ -59,6 +59,7 @@ import {
 import {
 	buildInstallerLaunchPlan,
 	buildMuteAudioPlan,
+	killWinePrefixProcesses,
 	removeFitgirlHostsEntries,
 	runInstaller,
 	toWinePath,
@@ -1119,6 +1120,27 @@ addon.on("setup", (data, event) => {
 				} finally {
 					stopTracking();
 					restoreBins();
+					// The "launch the game" finish step is a nowait postinstall
+					// [Run] entry that also fires under /VERYSILENT, so the game
+					// (and wineserver) can outlive the installer; sweep the prefix.
+					if (runsSetupViaWine) {
+						const killed = await killWinePrefixProcesses(
+							useSikarugir ? sikarugirWinePrefix : winePrefixDir,
+							useSikarugir
+								? {
+										wineserverBin: join(
+											dirname(sikarugirWineBin),
+											"wineserver",
+										),
+									}
+								: {},
+						);
+						if (killed > 0) {
+							event.log(
+								"Stopped Wine processes the installer left running (e.g. an auto-launched game).",
+							);
+						}
+					}
 				}
 			} else {
 				event.log(`Opening setup.exe`);

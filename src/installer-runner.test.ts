@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildInstallerLaunchPlan,
 	convertUmuIdToGameId,
+	killWinePrefixProcesses,
 	removeFitgirlHostsEntries,
 	toWinePath,
 } from "./installer-runner";
@@ -109,6 +111,27 @@ describe("installer runner", () => {
 			expect(removeFitgirlHostsEntries({ winePrefix: prefix })).toBe(false);
 		} finally {
 			fs.rmSync(prefix, { recursive: true, force: true });
+		}
+	});
+
+	test("kills processes carrying the wine prefix in their environment", async () => {
+		// A unique fake prefix path in the child's env stands in for a real
+		// Wine session; the sweep matches on env, not process names.
+		const fakePrefix = join(tmpdir(), `fatboy-kill-${process.pid}`);
+		const child = spawn("sleep", ["30"], {
+			env: { ...process.env, WINEPREFIX: fakePrefix },
+			stdio: "ignore",
+		});
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const killed = await killWinePrefixProcesses(fakePrefix, {
+				graceMs: 200,
+			});
+			expect(killed).toBeGreaterThanOrEqual(1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+		} finally {
+			child.kill("SIGKILL");
 		}
 	});
 });

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -176,6 +176,77 @@ export function removeFitgirlHostsEntries(options: {
 		}
 	}
 	return removedAny;
+}
+
+/**
+ * PIDs of live processes whose environment references winePrefix. FitGirl's
+ * "launch the game" finish step is a nowait postinstall [Run] entry that also
+ * fires under /VERYSILENT, so the game (plus wineserver/services.exe) can
+ * outlive the installer. Every process in a Wine session carries the prefix
+ * path in its environment, which is the most reliable handle we have on the
+ * session from outside. Linux-only: reads /proc.
+ */
+export function listWinePrefixPids(winePrefix: string): number[] {
+	const needle = winePrefix.endsWith("/") ? winePrefix.slice(0, -1) : winePrefix;
+	const pids: number[] = [];
+	let entries: string[];
+	try {
+		entries = fs.readdirSync("/proc");
+	} catch {
+		return pids;
+	}
+	for (const entry of entries) {
+		const pid = Number(entry);
+		if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+		try {
+			const environ = fs.readFileSync(`/proc/${pid}/environ`, "utf-8");
+			if (environ.includes(needle)) pids.push(pid);
+		} catch {
+			// Exited mid-scan or not ours to read; either way not a target.
+		}
+	}
+	return pids;
+}
+
+/**
+ * Kills every Wine process still attached to winePrefix: SIGTERM, a grace
+ * period, then SIGKILL for survivors. Returns how many processes were
+ * signalled. On macOS /proc does not exist, so pass wineserverBin (sibling of
+ * the wine binary) and the whole session is shut down via `wineserver -k`
+ * instead.
+ */
+export async function killWinePrefixProcesses(
+	winePrefix: string,
+	options?: { wineserverBin?: string; graceMs?: number },
+): Promise<number> {
+	if (options?.wineserverBin) {
+		try {
+			execFileSync(options.wineserverBin, ["-k"], {
+				env: { ...process.env, WINEPREFIX: winePrefix },
+			});
+			return 1;
+		} catch {
+			return 0;
+		}
+	}
+
+	const signal = (pids: number[], sig: NodeJS.Signals): number[] =>
+		pids.filter((pid) => {
+			try {
+				process.kill(pid, sig);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+
+	const targets = signal(listWinePrefixPids(winePrefix), "SIGTERM");
+	if (targets.length === 0) return 0;
+	await new Promise((resolve) =>
+		setTimeout(resolve, options?.graceMs ?? 2_000),
+	);
+	signal(listWinePrefixPids(winePrefix), "SIGKILL");
+	return targets.length;
 }
 
 /**
