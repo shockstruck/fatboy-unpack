@@ -14,7 +14,29 @@ export type GameInfo = {
 	coverImage: string;
 	steamAppId?: string;
 	directLinks: { service: string; links: DirectDownloadLink[] }[];
+	/** "Original Size" from the page in bytes; null when the page omits it. */
+	originalSizeBytes: number | null;
+	/**
+	 * "HDD space after installation" from the page in bytes — the post-install
+	 * disk footprint, which can exceed originalSizeBytes. Null when omitted.
+	 */
+	hddSpaceAfterInstallBytes: number | null;
 };
+
+const SIZE_UNITS: Record<string, number> = {
+	kb: 2 ** 10,
+	mb: 2 ** 20,
+	gb: 2 ** 30,
+	tb: 2 ** 40,
+};
+
+function parseSizeToBytes(text: string | undefined): number | null {
+	const match = text?.match(/([\d.,]+)\s*([KMGT]B)/i);
+	if (!match) return null;
+	const value = Number.parseFloat(match[1].replace(",", "."));
+	const unit = SIZE_UNITS[match[2].toLowerCase()];
+	return Number.isFinite(value) && unit ? Math.round(value * unit) : null;
+}
 
 function isDownloadOrContainerUrl(url: string): boolean {
 	try {
@@ -48,6 +70,8 @@ export function parseGameMetadataHtml(game: Game, html: string): GameInfo {
 		magnetLink: "",
 		torrentLinks: [],
 		directLinks: [],
+		originalSizeBytes: null,
+		hddSpaceAfterInstallBytes: null,
 	};
 	const entry = document.querySelector(".entry-content");
 	if (!entry) return data;
@@ -57,6 +81,16 @@ export function parseGameMetadataHtml(game: Game, html: string): GameInfo {
 	);
 	if (companyMatch) data.company = companyMatch[1].trim();
 	data.coverImage = entry.querySelector("img")?.getAttribute("src") ?? "";
+
+	const entryText = entry.textContent ?? "";
+	data.originalSizeBytes = parseSizeToBytes(
+		entryText.match(/Original Size:\s*([\d.,]+\s*[KMGT]B)/i)?.[1],
+	);
+	data.hddSpaceAfterInstallBytes = parseSizeToBytes(
+		entryText.match(
+			/HDD space after installation:\s*(?:up to\s*)?([\d.,]+\s*[KMGT]B)/i,
+		)?.[1],
+	);
 
 	const torrentHeader = Array.from(entry.querySelectorAll("h3")).find(
 		(header) =>

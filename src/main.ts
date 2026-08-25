@@ -74,7 +74,7 @@ import {
 	type OptionalBinGroup,
 	type RepackBins,
 } from "./repack-bins";
-import { trackDirectoryGrowth } from "./install-progress";
+import { trackInstallProgress } from "./install-progress";
 
 const UMU_BIN = join(
 	process.env.HOME! ?? "",
@@ -265,6 +265,8 @@ addon.on("search", (data, event) => {
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
 					fitgirlGameName: game.name,
+					originalSizeBytes: gameMetaData.originalSizeBytes,
+					hddSpaceAfterInstallBytes: gameMetaData.hddSpaceAfterInstallBytes,
 				},
 			});
 		}
@@ -293,6 +295,8 @@ addon.on("search", (data, event) => {
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
 					fitgirlGameName: game.name,
+					originalSizeBytes: gameMetaData.originalSizeBytes,
+					hddSpaceAfterInstallBytes: gameMetaData.hddSpaceAfterInstallBytes,
 				},
 			});
 		}
@@ -307,6 +311,8 @@ addon.on("search", (data, event) => {
 				manifest: {
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
+					originalSizeBytes: gameMetaData.originalSizeBytes,
+					hddSpaceAfterInstallBytes: gameMetaData.hddSpaceAfterInstallBytes,
 				},
 			});
 		}
@@ -477,6 +483,10 @@ type SetupManifest = {
 	pathOfSetupExe?: string;
 	installUpdateGroups?: DownloadedUpdateGroup[];
 	installUpdateTargetVersion?: string;
+	// Scraped from the repack page at search time; null when the page omits
+	// the figure. Used as the install-progress denominator.
+	originalSizeBytes?: number | null;
+	hddSpaceAfterInstallBytes?: number | null;
 };
 
 function resolveSelectedFilePath(
@@ -987,11 +997,20 @@ addon.on("setup", (data, event) => {
 			if (input.automate) {
 				fs.mkdirSync(installDir, { recursive: true });
 				const restoreBins = excludeOptionalBins(setupDir, excludedOptional);
-				const stopTracking = trackDirectoryGrowth(
+				let lastPhase = "extracting";
+				const stopTracking = trackInstallProgress(
 					installDir,
-					estimateInstalledBytes(bins, includedOptional),
-					(progress) => {
-						event.progress = progress;
+					estimateInstalledBytes(bins, includedOptional, setupManifest),
+					(update) => {
+						event.progress = update.progress;
+						if (update.phase !== lastPhase) {
+							lastPhase = update.phase;
+							event.log(
+								update.phase === "verifying"
+									? "The installer is verifying files (disk growth has stopped); this can take a while and the progress bar will hold until it finishes."
+									: "The installer resumed writing files.",
+							);
+						}
 					},
 				);
 				try {
@@ -1958,7 +1977,10 @@ export async function scrapeGameMetadata(
 		const hasLegacyEmptyFuckingFast = cached.directLinks.some(
 			(link) => link.service === "FuckingFast" && link.links.length === 0,
 		);
-		if (!hasLegacyEmptyFuckingFast) return cached;
+		// Scrapes cached before size fields existed must be refreshed so the
+		// install-progress denominator is available.
+		const missingSizeFields = cached.originalSizeBytes === undefined;
+		if (!hasLegacyEmptyFuckingFast && !missingSizeFields) return cached;
 	}
 
 	const response = await axiosGetWithDDOSGuard(addon, game.url, {});
@@ -1998,24 +2020,45 @@ function componentCandidates(includedOptional: OptionalBinGroup[]): string[] {
 
 /**
  * Silent installs report progress by watching the install dir grow, so we
- * need a target size. FitGirl compresses roughly 1.5-3x; doubling the bin
- * payload is a deliberate overshoot — progress lands short of 100 rather
- * than pinning at 99 early.
+ * need a target size. The scraped page figures are authoritative when
+ * available: "HDD space after installation" is the real post-install
+ * footprint, "Original Size" a close second. Both describe the full repack,
+ * so scale by the selected share of the compressed payload when optional
+ * content is deselected. Without a scrape we fall back to 2.5x the selected
+ * bin payload — a deliberate overshoot (FitGirl compresses ~1.5-3x) so
+ * progress lands short of 100 rather than pinning at 99 early.
  */
 function estimateInstalledBytes(
 	bins: RepackBins,
 	includedOptional: OptionalBinGroup[],
+	scraped?: {
+		originalSizeBytes?: number | null;
+		hddSpaceAfterInstallBytes?: number | null;
+	},
 ): number {
 	const selectiveSize = bins.selective.reduce(
 		(total, group) => total + group.size,
 		0,
 	);
-	const optionalSize = includedOptional.reduce(
+	const includedOptionalSize = includedOptional.reduce(
 		(total, group) => total + group.size,
 		0,
 	);
-	return Math.max(
-		(bins.requiredSize + selectiveSize + optionalSize) * 2,
-		2 ** 30,
+	const allOptionalSize = bins.optional.reduce(
+		(total, group) => total + group.size,
+		0,
 	);
+	const selectedPayload =
+		bins.requiredSize + selectiveSize + includedOptionalSize;
+
+	const pageSize =
+		scraped?.hddSpaceAfterInstallBytes ?? scraped?.originalSizeBytes ?? null;
+	if (pageSize && pageSize > 0) {
+		const fullPayload = bins.requiredSize + selectiveSize + allOptionalSize;
+		const selectedShare =
+			fullPayload > 0 ? selectedPayload / fullPayload : 1;
+		return Math.max(Math.round(pageSize * selectedShare), 2 ** 30);
+	}
+
+	return Math.max(Math.round(selectedPayload * 2.5), 2 ** 30);
 }
