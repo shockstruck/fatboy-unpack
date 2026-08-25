@@ -12,10 +12,15 @@ import OGIAddon, {
 } from "ogi-addon";
 import { solveDDOSGuard } from "./ddosguard";
 import {
+	type DirectDownloadFile,
+	hasFuckingFastLink,
+	rankLinksKeepingLowPriority,
 	resolveFuckingFastFiles,
 	resolveFuckingFastUpdateFiles,
+	sanitizeDownloadedFileName,
 } from "./direct-download";
 import { catchDownload, renderFileCryptContainer } from "./download";
+import { catchUserDownloads } from "./download-catcher";
 import {
 	type ExtractionJob,
 	extractAllWithProgress,
@@ -1592,11 +1597,104 @@ addon.on("setup", (data, event) => {
 	})();
 });
 
-type DirectDownloadFile = { name: string; downloadURL: string };
+// Minimal shape of EventResponse.askForInput needed by the interactive
+// download-catcher notice — a single acknowledge action, nothing else.
+type AskForInput = (
+	title: string,
+	message: string,
+	screen: ConfigurationBuilder<{ acknowledge: boolean }>,
+) => Promise<{ acknowledge: boolean }>;
+
+async function requestManualDownloadAcknowledgement(
+	askForInput: AskForInput,
+): Promise<void> {
+	await askForInput(
+		"Manual Download Required",
+		"Some files couldn't be resolved automatically. A browser window with adblock will open — please press each page's download button, and our system will catch the download for you.",
+		new ConfigurationBuilder().addActionOption((option) =>
+			option
+				.setButtonText("Continue")
+				.setName("acknowledge")
+				.setDescription("I understand and will click each download button."),
+		),
+	);
+}
+
+// Groups mirrors of the same file by name and keeps only the best-ranked
+// link per file (priority-0 hosters included — the user can still click
+// through them, unlike the fully-automated path).
+function pickBestLinksPerFile(
+	links: { name: string; url: string }[],
+): { name: string; url: string }[] {
+	const byName = new Map<string, { name: string; url: string }[]>();
+	for (const link of links) {
+		byName.set(link.name, [...(byName.get(link.name) ?? []), link]);
+	}
+	const picked: { name: string; url: string }[] = [];
+	byName.forEach((mirrors, name) => {
+		const ranked = rankLinksKeepingLowPriority(mirrors);
+		if (ranked.length > 0) picked.push({ name, url: ranked[0].url });
+	});
+	return picked;
+}
+
+// Shared resolution for a set of unlocked FileCrypt links: dedupe by URL,
+// take the fully-automated FuckingFast path when available, otherwise fall
+// back to the interactive download catcher. `askForInput` is optional so a
+// caller that already asked once for a whole batch (see
+// resolveAutomaticFitGirlUpdates) can skip asking again per group.
+async function resolveDirectDownloadFiles(
+	unlocked: { name: string; url: string }[],
+	options: {
+		log: (message: string) => void;
+		askForInput?: AskForInput;
+		resolveFuckingFast: (
+			links: { name: string; url: string }[],
+		) => Promise<DirectDownloadFile[]>;
+		fallbackNamePrefix: string;
+	},
+): Promise<DirectDownloadFile[]> {
+	const deduped = Array.from(
+		new Map(unlocked.map((link) => [link.url, link])).values(),
+	);
+
+	if (hasFuckingFastLink(deduped)) {
+		const fuckingFastLinks = deduped.filter((link) => {
+			try {
+				return resolveServiceFromUrl(link.url).name === "FuckingFast";
+			} catch {
+				return false;
+			}
+		});
+		return options.resolveFuckingFast(fuckingFastLinks);
+	}
+
+	const picked = pickBestLinksPerFile(deduped);
+	if (picked.length === 0) {
+		throw new Error("No usable download links were found");
+	}
+
+	if (options.askForInput) {
+		await requestManualDownloadAcknowledgement(options.askForInput);
+	}
+
+	const caught = await catchUserDownloads(picked, { onStatus: options.log });
+
+	return caught.map((result, index) => ({
+		name: sanitizeDownloadedFileName(
+			picked[index].name,
+			result.suggestedFilename,
+			`${options.fallbackNamePrefix}${index}.rar`,
+		),
+		downloadURL: result.downloadURL,
+		headers: result.headers,
+	}));
+}
 
 async function resolveAutomaticFitGirlUpdates(
 	gameName: string,
 	log: (message: string) => void,
+	askForInput: AskForInput,
 	knownUpdates?: FitGirlUpdate[],
 ): Promise<{
 	files: DirectDownloadFile[];
@@ -1609,30 +1707,32 @@ async function resolveAutomaticFitGirlUpdates(
 			(await axiosGetWithDDOSGuard(addon, FITGIRL_UPDATES_URL, {})).data,
 			gameName,
 		);
+
+	const unlockedByUpdate = await Promise.all(
+		updates.map((update) =>
+			unlockFileCryptContainer(update.url, {
+				request: requestFileCryptResource,
+				renderContainer: renderFileCryptContainer,
+			}),
+		),
+	);
+
+	// Ask once for the whole run, not once per update group or per link.
+	if (unlockedByUpdate.some((links) => !hasFuckingFastLink(links))) {
+		await requestManualDownloadAcknowledgement(askForInput);
+	}
+
 	const files: DirectDownloadFile[] = [];
 	const groups: DownloadedUpdateGroup[] = [];
 
 	for (const [groupIndex, update] of updates.entries()) {
 		log(`Resolving update ${groupIndex + 1}/${updates.length}: ${update.name}`);
-		const unlocked = await unlockFileCryptContainer(update.url, {
-			request: requestFileCryptResource,
-			renderContainer: renderFileCryptContainer,
+		const resolved = await resolveDirectDownloadFiles(unlockedByUpdate[groupIndex], {
+			log,
+			resolveFuckingFast: (links) =>
+				resolveFuckingFastUpdateFiles(links, catchDownload),
+			fallbackNamePrefix: "update-",
 		});
-		const supportedLinks = unlocked.filter((link) => {
-			try {
-				return resolveServiceFromUrl(link.url).name === "FuckingFast";
-			} catch {
-				return false;
-			}
-		});
-		if (supportedLinks.length === 0) {
-			throw new Error(`No supported FuckingFast files found for ${update.name}`);
-		}
-
-		const resolved = await resolveFuckingFastUpdateFiles(
-			supportedLinks,
-			catchDownload,
-		);
 		const groupFiles = resolved.map((file) => ({
 			...file,
 			name: `update${groupIndex}-${file.name}`,
@@ -1674,6 +1774,7 @@ addon.on("request-dl", (appID, info, event) => {
 				const updates = await resolveAutomaticFitGirlUpdates(
 					(info.manifest.fitgirlGameName as string | undefined) ?? info.name,
 					(message) => event.log(message),
+					(title, message, screen) => event.askForInput(title, message, screen),
 				);
 				event.resolve({
 					name: `FuckingFast | ${info.name}`,
@@ -1701,37 +1802,24 @@ addon.on("request-dl", (appID, info, event) => {
 						),
 					)
 				).flat();
-				const fuckingFastLinks = Array.from(
-					new Map(
-						unlocked
-							.filter((link) => {
-								try {
-									return resolveServiceFromUrl(link.url).name === "FuckingFast";
-								} catch {
-									return false;
-								}
-							})
-							.map((link) => [link.url, link]),
-					).values(),
-				);
-				if (fuckingFastLinks.length === 0) {
-					throw new Error(
-						"FileCrypt container did not contain supported FuckingFast links",
-					);
-				}
-				const baseFiles = await resolveFuckingFastFiles(
-					fuckingFastLinks,
-					catchDownload,
-					(found, total) =>
-						addon.notify({
-							message: `Found link (${found}/${total}) for ${info.name}`,
-							id: "fatboy-unpack-download-link-found",
-							type: "success",
-						}),
-				);
+				const baseFiles = await resolveDirectDownloadFiles(unlocked, {
+					log: (message) => event.log(message),
+					askForInput: (title, message, screen) =>
+						event.askForInput(title, message, screen),
+					resolveFuckingFast: (links) =>
+						resolveFuckingFastFiles(links, catchDownload, (found, total) =>
+							addon.notify({
+								message: `Found link (${found}/${total}) for ${info.name}`,
+								id: "fatboy-unpack-download-link-found",
+								type: "success",
+							}),
+						),
+					fallbackNamePrefix: "part",
+				});
 				const updates = await resolveAutomaticFitGirlUpdates(
 					(info.manifest.fitgirlGameName as string | undefined) ?? info.name,
 					(message) => event.log(message),
+					(title, message, screen) => event.askForInput(title, message, screen),
 				);
 				event.resolve({
 					name: `FileCrypt | ${info.name}`,
@@ -1757,6 +1845,7 @@ addon.on("request-dl", (appID, info, event) => {
 				const resolvedUpdates = await resolveAutomaticFitGirlUpdates(
 					info.name,
 					(message) => event.log(message),
+					(title, message, screen) => event.askForInput(title, message, screen),
 					updates,
 				);
 				event.resolve({
