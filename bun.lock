@@ -12,6 +12,7 @@
         "puppeteer-extra-plugin-adblocker": "^2.13.6",
         "puppeteer-extra-plugin-stealth": "^2.11.2",
         "puppeteer-real-browser": "1.4.4",
+        "tldts-experimental": "^5.7.112",
       },
       "devDependencies": {
         "@types/jsdom": "^21.1.7",
