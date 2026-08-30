@@ -1,5 +1,13 @@
 import { withBrowserWindow } from "./browser-queue";
+import {
+	type FileCryptResponse,
+	isExternalFileCryptDestination,
+} from "./filecrypt";
 import { connectRealBrowser } from "./real-browser";
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function catchDownload(
 	url: string,
@@ -106,25 +114,64 @@ async function catchDownloadNow(
 	}
 }
 
-export function renderFileCryptContainer(url: string): Promise<string> {
+export function renderFileCryptContainer(url: string): Promise<FileCryptResponse> {
 	return withBrowserWindow(() => renderFileCryptContainerNow(url));
 }
 
-async function renderFileCryptContainerNow(url: string): Promise<string> {
+async function renderFileCryptContainerNow(
+	url: string,
+): Promise<FileCryptResponse> {
 	let browser: Awaited<ReturnType<typeof connectRealBrowser>>["browser"] | undefined;
 	try {
 		const connection = await connectRealBrowser();
 		browser = connection.browser;
 		await connection.page.goto(url, { waitUntil: "domcontentloaded" });
 		await connection.page.waitForSelector("body");
-		// This window is user-facing: captcha-gated containers need the user to
-		// solve a recaptcha here, so give them a few minutes, not seconds.
-		await connection.page
-			.waitForSelector('.dlcdownload, [onclick^="openLink"]', {
-				timeout: 180_000,
-			})
-			.catch(() => null);
-		return await connection.page.content();
+
+		// FileCrypt's protected single-link flow opens a duplicate/ad tab and
+		// navigates the original tab directly to the hoster. Keep the original
+		// focused, close every extra tab, and preserve that final URL instead of
+		// waiting three minutes for container controls that will never appear.
+		const deadline = Date.now() + 180_000;
+		let externalUrl: string | null = null;
+		let externalSince = 0;
+		while (Date.now() < deadline) {
+			for (const page of await browser.pages()) {
+				if (page !== connection.page) await page.close().catch(() => {});
+			}
+
+			const currentUrl = connection.page.url();
+			if (isExternalFileCryptDestination(currentUrl, url)) {
+				if (currentUrl !== externalUrl) {
+					externalUrl = currentUrl;
+					externalSince = Date.now();
+				} else if (Date.now() - externalSince >= 1000) {
+					return {
+						body: await connection.page.content().catch(() => ""),
+						url: currentUrl,
+					};
+				}
+			} else {
+				externalUrl = null;
+				const unlocked = await connection.page
+					.$('.dlcdownload, [onclick^="openLink"]')
+					.catch(() => null);
+				if (unlocked) {
+					return {
+						body: await connection.page.content(),
+						url: currentUrl,
+					};
+				}
+			}
+
+			await connection.page.bringToFront().catch(() => {});
+			await sleep(250);
+		}
+
+		return {
+			body: await connection.page.content().catch(() => ""),
+			url: connection.page.url(),
+		};
 	} finally {
 		await browser?.close().catch(() => {});
 	}

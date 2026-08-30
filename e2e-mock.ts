@@ -2,12 +2,13 @@
 // that reproduces real hoster behavior — ad tab + popup opened on click, a
 // mid-session hijack, and downloads begun from both a popup and the main tab.
 // The real FileCrypt captcha backend is network-blocked here, so this covers
-// the catcher itself. Usage: DISPLAY=:99 bun run e2e-mock.ts
+// the catcher itself. Usage: DISPLAY=:99 FATBOY_E2E_AUTO=1 bun run e2e-mock.ts
 import { catchUserDownloads } from "./src/download-catcher";
 
 const PORT = 18989;
 const HOSTER = `http://app.localtest.me:${PORT}`;
 const SCAM = `http://127.0.0.1:${PORT}`;
+const auto = process.env.FATBOY_E2E_AUTO === "1";
 
 const rarBytes = new Uint8Array([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00, ...Array(64).fill(0)]);
 
@@ -15,6 +16,9 @@ const page = (title: string, body: string) =>
 	new Response(`<!doctype html><title>${title}</title><body style="font:20px sans-serif;padding:40px">${body}</body>`, {
 		headers: { "content-type": "text/html" },
 	});
+
+const autoClick = (id: string, delay = 500): string =>
+	auto ? `<script>setTimeout(() => document.querySelector('#${id}')?.click(), ${delay})</script>` : "";
 
 Bun.serve({
 	port: PORT,
@@ -29,21 +33,29 @@ Bun.serve({
 				// below asserts the catcher captured it.
 				const response = page("Hoster page 1", `
 					<h1>game.part1.rar</h1>
-					<button id="dl" style="font-size:28px;padding:20px" onclick="window.open('${SCAM}/scam');window.open('/popup/1')">Free Download</button>`);
+					<button id="dl" style="font-size:28px;padding:20px" onclick="const download=window.open('about:blank');setTimeout(()=>download.location='/popup/1',1500);window.open('${SCAM}/scam')">Free Download</button>
+					${autoClick("dl")}`);
 				response.headers.set("set-cookie", "hoster_session=mock-session-token; Path=/");
 				return response;
 			}
 			case "/popup/1":
 				return page("Download popup", `
 					<h1>Your download is ready</h1>
-					<button id="dlnow" style="font-size:28px;padding:20px" onclick="location.href='/dl/game.part1.rar'">DOWNLOAD NOW</button>`);
+					<button id="dlnow" style="font-size:28px;padding:20px" onclick="location.href='/dl/game.part1.rar'">DOWNLOAD NOW</button>
+					${autoClick("dlnow")}`);
 			case "/host/2":
 				// Hijack pattern: the tab redirects itself off-site shortly after
 				// load; recovery must snap back so the user can click Download.
 				return page("Hoster page 2", `
 					<h1>game.part2.rar</h1>
 					<button id="dl" style="font-size:28px;padding:20px" onclick="location.href='/dl/game.part2.rar'">Download</button>
-					<script>setTimeout(() => { location.href = '${SCAM}/scam'; }, 1500);</script>`);
+					<script>
+						if (!sessionStorage.getItem('hijacked')) {
+							sessionStorage.setItem('hijacked', '1');
+							setTimeout(() => { location.href = '${SCAM}/scam'; }, 500);
+						}
+					</script>
+					${autoClick("dl", 1000)}`);
 			case "/scam":
 				return page("TOTALLY REAL PRIZE", `<h1>You won! Click here!!</h1>`);
 			case "/dl/game.part1.rar":

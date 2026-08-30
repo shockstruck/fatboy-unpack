@@ -112,23 +112,30 @@ async function enableAdblock(
 		.catch(() => {});
 }
 
-// Close every page except the working tab and explicitly allowed popups,
-// then refocus the working tab. Used both after judging a new target and as
-// a delayed sweep, since popups opened immediately on navigation can beat
-// the "targetcreated" listener.
+// Close every page except the working tab and popups that are allowed or
+// still being classified, then refocus the working tab. Protecting pending
+// popups matters: one rejected ad must not sweep away a legitimate popup
+// while it is still sitting on about:blank.
 async function closePopupPages(
 	browser: CatcherBrowser,
 	mainPage: CatcherPage,
 	allowedPopups: Set<unknown>,
+	pendingTargets: Set<unknown>,
 ): Promise<void> {
 	try {
 		const pages = await browser.pages();
 		for (const page of pages) {
-			if (page !== mainPage && !allowedPopups.has(page)) {
+			if (
+				page !== mainPage &&
+				!allowedPopups.has(page) &&
+				!pendingTargets.has(page.target())
+			) {
 				await page.close().catch(() => {});
 			}
 		}
-		if (allowedPopups.size === 0) await mainPage.bringToFront();
+		if (allowedPopups.size === 0 && pendingTargets.size === 0) {
+			await mainPage.bringToFront();
+		}
 	} catch {
 		// Browser or page may already be closing.
 	}
@@ -279,9 +286,12 @@ async function catchOneDownload(
 	// CDP session catches its download without any per-popup arming, so even
 	// a download that begins mid-judging is not lost.
 	const allowedPopups = new Set<CatcherPage>();
-	const popupHandler = async (target: Target) => {
+	const pendingTargets = new Set<Target>();
+	const popupTasks = new Set<Promise<void>>();
+	const handlePopup = async (target: Target): Promise<void> => {
+		let popup: CatcherPage | null = null;
 		try {
-			const popup = target.type() === "page" ? await target.page() : null;
+			popup = target.type() === "page" ? await target.page() : null;
 			if (popup && popup !== page && !allowedPopups.has(popup)) {
 				const url = await resolvePopupUrl(popup);
 				if (isAllowedPopup(url, link.url)) {
@@ -297,19 +307,31 @@ async function catchOneDownload(
 					await enableAdblock(popup, engine);
 					return;
 				}
+				await popup.close().catch(() => {});
 			}
 		} catch {
-			// Judging failed (tab already closed, browser going down) — sweep.
+			// The tab may already be closed or the browser may be going down.
+		} finally {
+			pendingTargets.delete(target);
 		}
-		await closePopupPages(browser, page, allowedPopups);
+	};
+	const popupHandler = (target: Target) => {
+		if (target.type() !== "page") return;
+		pendingTargets.add(target);
+		const task = handlePopup(target);
+		popupTasks.add(task);
+		void task.finally(() => popupTasks.delete(task));
 	};
 	browser.on("targetcreated", popupHandler);
+	const popupSweep = setInterval(() => {
+		void closePopupPages(browser, page, allowedPopups, pendingTargets);
+	}, 500);
 	try {
 		// A navigation that itself triggers the download commonly aborts with
 		// net::ERR_ABORTED; that's fine, downloadPromise still catches it.
 		await page.goto(link.url, { waitUntil: "domcontentloaded" }).catch(() => {});
 		await sleep(1000);
-		await closePopupPages(browser, page, allowedPopups);
+		await closePopupPages(browser, page, allowedPopups, pendingTargets);
 
 		const caught = await downloadPromise;
 
@@ -328,12 +350,15 @@ async function catchOneDownload(
 			headers,
 		};
 	} finally {
+		clearInterval(popupSweep);
 		browserCdp.off("Browser.downloadWillBegin", onDownload);
 		browser.off("targetcreated", popupHandler);
 		removeHijackRecovery();
+		await Promise.allSettled(popupTasks);
 		for (const popup of allowedPopups) {
 			await popup.close().catch(() => {});
 		}
+		await closePopupPages(browser, page, new Set(), new Set());
 	}
 }
 

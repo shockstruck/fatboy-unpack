@@ -22,7 +22,7 @@ export type FileCryptRequest = (
 
 export type FileCryptDependencies = {
 	request: FileCryptRequest;
-	renderContainer?: (url: string) => Promise<string>;
+	renderContainer?: (url: string) => Promise<string | FileCryptResponse>;
 };
 
 export const requestFileCryptResource: FileCryptRequest = async (url, init) => {
@@ -93,6 +93,23 @@ function linkName(url: string, index: number): string {
 	}
 }
 
+export function isExternalFileCryptDestination(
+	url: string,
+	containerUrl: string,
+): boolean {
+	try {
+		const rendered = new URL(url);
+		const container = new URL(containerUrl);
+		return (
+			(rendered.protocol === "http:" || rendered.protocol === "https:") &&
+			rendered.hostname !== container.hostname &&
+			!/filecrypt\./i.test(rendered.hostname)
+		);
+	} catch {
+		return false;
+	}
+}
+
 export async function unlockFileCryptContainer(
 	containerUrl: string,
 	dependencies: FileCryptDependencies,
@@ -100,9 +117,26 @@ export async function unlockFileCryptContainer(
 	const container = await dependencies.request(containerUrl);
 	let ids = parseFileCryptContainer(container.body);
 	if (!ids.dlcId && ids.linkIds.length === 0 && dependencies.renderContainer) {
-		ids = parseFileCryptContainer(
-			await dependencies.renderContainer(containerUrl),
-		);
+		const rendered = await dependencies.renderContainer(containerUrl);
+		const renderedResponse =
+			typeof rendered === "string"
+				? { body: rendered, url: containerUrl }
+				: rendered;
+		ids = parseFileCryptContainer(renderedResponse.body);
+		// Single-link protected containers navigate the working tab straight to
+		// the hoster after verification instead of revealing openLink elements.
+		if (
+			!ids.dlcId &&
+			ids.linkIds.length === 0 &&
+			isExternalFileCryptDestination(renderedResponse.url, containerUrl)
+		) {
+			return [
+				{
+					name: linkName(renderedResponse.url, 0),
+					url: renderedResponse.url,
+				},
+			];
+		}
 	}
 	const { dlcId, linkIds } = ids;
 	if (dlcId) {

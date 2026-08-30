@@ -147,6 +147,28 @@ describe("unlockFileCryptContainer", () => {
 			{ name: "rendered", url: "https://fuckingfast.co/dl/rendered" },
 		]);
 	});
+
+	test("keeps a hoster URL reached directly after captcha verification", async () => {
+		const request: FileCryptRequest = async (url) => ({
+			body: `<div class="pow-captcha"></div>`,
+			url,
+		});
+
+		await expect(
+			unlockFileCryptContainer("https://filecrypt.cc/Container/direct.html", {
+				request,
+				renderContainer: async () => ({
+					body: `<button>Free Download</button>`,
+					url: "https://datanodes.to/download/update-part1.rar.html",
+				}),
+			}),
+		).resolves.toEqual([
+			{
+				name: "update-part1.rar.html",
+				url: "https://datanodes.to/download/update-part1.rar.html",
+			},
+		]);
+	});
 });
 
 describe("parseGameMetadataHtml", () => {
