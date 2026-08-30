@@ -8,12 +8,20 @@ export type FileCryptContainerIds = {
 export type FileCryptLink = {
 	name: string;
 	url: string;
+	caughtDownload?: FileCryptCaughtDownload;
+};
+
+export type FileCryptCaughtDownload = {
+	downloadURL: string;
+	suggestedFilename: string | null;
+	headers: Record<string, string>;
 };
 
 export type FileCryptResponse = {
 	body: string;
 	url: string;
 	requestHeaders?: Record<string, string>;
+	caughtDownload?: FileCryptCaughtDownload;
 };
 
 export type FileCryptRequest = (
@@ -124,6 +132,17 @@ export async function unlockFileCryptContainer(
 			typeof rendered === "string"
 				? { body: rendered, url: containerUrl }
 				: rendered;
+		if (renderedResponse.caughtDownload) {
+			return [
+				{
+					name:
+						renderedResponse.caughtDownload.suggestedFilename ??
+						linkName(renderedResponse.caughtDownload.downloadURL, 0),
+					url: renderedResponse.url,
+					caughtDownload: renderedResponse.caughtDownload,
+				},
+			];
+		}
 		renderedRequestHeaders = renderedResponse.requestHeaders;
 		ids = parseFileCryptContainer(renderedResponse.body);
 		// Single-link protected containers navigate the working tab straight to

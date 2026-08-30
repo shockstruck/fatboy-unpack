@@ -1,8 +1,7 @@
-// Untracked e2e harness: runs catchUserDownloads against a local mock hoster
-// that reproduces real hoster behavior — ad tab + popup opened on click, a
-// mid-session hijack, and downloads begun from both a popup and the main tab.
-// The real FileCrypt captcha backend is network-blocked here, so this covers
-// the catcher itself. Usage: DISPLAY=:99 FATBOY_E2E_AUTO=1 bun run e2e-mock.ts
+// Browser e2e harness: keeps one Chrome session from a verified FileCrypt
+// page through DataNodes and its download, then exercises the standalone
+// catcher against a redirect hijack. Usage:
+// DISPLAY=:99 FATBOY_E2E_AUTO=1 bun run e2e-mock.ts
 import { catchUserDownloads } from "./src/download-catcher";
 import { renderFileCryptContainer } from "./src/download";
 import { unlockFileCryptContainer } from "./src/filecrypt";
@@ -34,6 +33,12 @@ Bun.serve({
 					`<!doctype html><title>FileCrypt</title><body>
 						<h1>Verified container</h1>
 						<script>
+							window.openLink = () => {
+								const hoster = window.open('about:blank');
+								setTimeout(() => {
+									hoster.location = '${HOSTER}/host/1';
+								}, 500);
+							};
 							setTimeout(() => {
 								const link = document.createElement('a');
 								link.setAttribute('onclick', 'openLink("verified-link")');
@@ -100,29 +105,28 @@ Bun.serve({
 console.log(`[e2e] mock hoster on ${HOSTER}`);
 
 const unlocked = await unlockFileCryptContainer(FILECRYPT, {
-	request: async (url, init) => {
+	request: async (url) => {
 		if (url === FILECRYPT) {
 			return { body: `<div class="pow-captcha"></div>`, url };
 		}
-		const cookie = new Headers(init?.headers).get("cookie") ?? "";
-		if (!cookie.includes("PHPSESSID=verified-browser")) {
-			throw new Error("FileCrypt verification cookie was not forwarded");
-		}
-		return { body: "", url: `${HOSTER}/host/1` };
+		throw new Error("FileCrypt link resolution left the live browser session");
 	},
 	renderContainer: renderFileCryptContainer,
 });
 
-const links = [
-	{ name: "game.part1.rar", url: unlocked[0]?.url ?? "" },
-	{ name: "game.part2.rar", url: `${HOSTER}/host/2` },
-];
+const first = unlocked[0]?.caughtDownload;
+if (!first) throw new Error("FileCrypt browser did not catch the first download");
 
-const results = await catchUserDownloads(links, {
-	onStatus: (message) => console.log(`[e2e status] ${message}`),
-	onCaught: (name, index, total) => console.log(`[e2e caught] ${name} (${index}/${total})`),
-	timeoutMsPerLink: 120_000,
-});
+const remaining = await catchUserDownloads(
+	[{ name: "game.part2.rar", url: `${HOSTER}/host/2` }],
+	{
+		onStatus: (message) => console.log(`[e2e status] ${message}`),
+		onCaught: (name, index, total) =>
+			console.log(`[e2e caught] ${name} (${index}/${total})`),
+		timeoutMsPerLink: 120_000,
+	},
+);
+const results = [first, ...remaining];
 
 console.log(`[e2e] RESULTS ${JSON.stringify(results, null, 2)}`);
 const ok =

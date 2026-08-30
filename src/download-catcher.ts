@@ -154,7 +154,7 @@ async function resolvePopupUrl(popup: CatcherPage): Promise<string> {
 	return popup.url();
 }
 
-async function captureHeaders(
+export async function captureDownloadHeaders(
 	page: CatcherPage,
 	downloadURL: string,
 ): Promise<Record<string, string>> {
@@ -341,7 +341,7 @@ async function catchOneDownload(
 			// The file still lands in /tmp, but we already have the URL.
 		}
 
-		const headers = await captureHeaders(page, caught.url);
+		const headers = await captureDownloadHeaders(page, caught.url);
 		headers.Referer = link.url;
 
 		return {

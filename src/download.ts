@@ -1,5 +1,9 @@
 import { withBrowserWindow } from "./browser-queue";
 import {
+	captureDownloadHeaders,
+	isAllowedPopup,
+} from "./download-catcher";
+import {
 	type FileCryptResponse,
 	isExternalFileCryptDestination,
 } from "./filecrypt";
@@ -14,6 +18,12 @@ type BrowserPage = Awaited<
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sanitizeFilename(name: string | null | undefined): string | null {
+	if (!name) return null;
+	const stripped = name.replace(/[/\\]+/g, "_").trim();
+	return stripped.length > 0 ? stripped : null;
 }
 
 function isKnownDownloadHoster(url: string): boolean {
@@ -155,78 +165,129 @@ async function renderFileCryptContainerNow(
 	try {
 		const connection = await connectRealBrowser();
 		browser = connection.browser;
-		await connection.page.goto(url, { waitUntil: "domcontentloaded" });
-		await connection.page.waitForSelector("body");
-
-		// FileCrypt may reveal link controls, navigate the original tab, or open
-		// the hoster in a new tab. Preserve recognized hoster tabs and carry the
-		// verified FileCrypt cookies forward when controls are revealed.
-		const deadline = Date.now() + 180_000;
-		const popupFirstSeen = new Map<BrowserPage, number>();
-		let externalUrl: string | null = null;
-		let externalSince = 0;
-		while (Date.now() < deadline) {
-			const pages = await browser.pages();
-			for (const page of pages) {
-				if (page === connection.page) continue;
-				const firstSeen = popupFirstSeen.get(page) ?? Date.now();
-				popupFirstSeen.set(page, firstSeen);
-				const popupUrl = page.url();
-				if (isKnownDownloadHoster(popupUrl)) {
-					return {
-						body: await page.content().catch(() => ""),
-						url: popupUrl,
-					};
-				}
-				const isPendingFileCryptPopup =
-					popupUrl === "about:blank" ||
-					!popupUrl ||
-					!isExternalFileCryptDestination(popupUrl, url);
-				if (
-					!isPendingFileCryptPopup ||
-					Date.now() - firstSeen >= 2500
-				) {
-					await page.close().catch(() => {});
-					popupFirstSeen.delete(page);
-				}
-			}
-
-			const currentUrl = connection.page.url();
-			if (isExternalFileCryptDestination(currentUrl, url)) {
-				if (currentUrl !== externalUrl) {
-					externalUrl = currentUrl;
-					externalSince = Date.now();
-				} else if (Date.now() - externalSince >= 1000) {
-					return {
-						body: await connection.page.content().catch(() => ""),
-						url: currentUrl,
-					};
-				}
-			} else {
-				externalUrl = null;
-				const unlocked = await connection.page
-					.$('.dlcdownload, [onclick^="openLink"]')
-					.catch(() => null);
-				if (unlocked) {
-					return {
-						body: await connection.page.content(),
-						url: currentUrl,
-						requestHeaders: await captureFileCryptSessionHeaders(
-							connection.page,
-							url,
-						),
-					};
-				}
-			}
-
-			await connection.page.bringToFront().catch(() => {});
-			await sleep(250);
-		}
-
-		return {
-			body: await connection.page.content().catch(() => ""),
-			url: connection.page.url(),
+		const browserCdp = await browser.target().createCDPSession();
+		type DownloadBeginEvent = {
+			url: string;
+			guid: string;
+			suggestedFilename?: string;
 		};
+		let caught: DownloadBeginEvent | undefined;
+		const onDownload = (event: DownloadBeginEvent) => {
+			caught ??= event;
+		};
+		browserCdp.on("Browser.downloadWillBegin", onDownload);
+		try {
+			await browserCdp.send("Browser.setDownloadBehavior", {
+				behavior: "allow",
+				downloadPath: "/tmp",
+				eventsEnabled: true,
+			});
+			await connection.page.goto(url, { waitUntil: "domcontentloaded" });
+			await connection.page.waitForSelector("body");
+
+			// Keep this browser alive from FileCrypt verification through the hoster
+			// click. The real URL and session headers only exist once Chrome starts
+			// the transfer, so returning a hoster URL here would discard both.
+			const deadline = Date.now() + 5 * 60_000;
+			const popupFirstSeen = new Map<BrowserPage, number>();
+			let hosterPage: BrowserPage | null = null;
+			let clickedOpenLink = false;
+			while (Date.now() < deadline && !caught) {
+				const pages = await browser.pages();
+				for (const page of pages) {
+					const pageUrl = page.url();
+					if (isKnownDownloadHoster(pageUrl)) {
+						hosterPage = page;
+						continue;
+					}
+					if (page === connection.page) continue;
+					if (
+						hosterPage &&
+						isAllowedPopup(pageUrl, hosterPage.url())
+					) {
+						continue;
+					}
+					const firstSeen = popupFirstSeen.get(page) ?? Date.now();
+					popupFirstSeen.set(page, firstSeen);
+					const isPendingFileCryptPopup =
+						pageUrl === "about:blank" ||
+						!pageUrl ||
+						!isExternalFileCryptDestination(pageUrl, url);
+					if (
+						!isPendingFileCryptPopup ||
+						Date.now() - firstSeen >= 2500
+					) {
+						await page.close().catch(() => {});
+						popupFirstSeen.delete(page);
+					}
+				}
+
+				if (!hosterPage && isKnownDownloadHoster(connection.page.url())) {
+					hosterPage = connection.page;
+				}
+
+				if (!hosterPage) {
+					const dlcButton = await connection.page
+						.$(".dlcdownload")
+						.catch(() => null);
+					if (dlcButton) {
+						return {
+							body: await connection.page.content(),
+							url: connection.page.url(),
+							requestHeaders: await captureFileCryptSessionHeaders(
+								connection.page,
+								url,
+							),
+						};
+					}
+
+					if (!clickedOpenLink) {
+						const openLink = await connection.page
+							.$('[onclick^="openLink"]')
+							.catch(() => null);
+						if (openLink) {
+							clickedOpenLink = true;
+							await openLink.click().catch(() =>
+								openLink.evaluate((element) =>
+									(element as HTMLElement).click(),
+								),
+							);
+						}
+					}
+				}
+
+				await (hosterPage ?? connection.page).bringToFront().catch(() => {});
+				await sleep(250);
+			}
+
+			if (!caught) {
+				throw new Error("Timed out waiting for the FileCrypt download to start");
+			}
+			if (!hosterPage) {
+				hosterPage =
+					(await browser.pages()).find((page) =>
+						isKnownDownloadHoster(page.url()),
+					) ?? null;
+			}
+			await browserCdp
+				.send("Browser.cancelDownload", { guid: caught.guid })
+				.catch(() => {});
+			const downloadPage = hosterPage ?? connection.page;
+			const headers = await captureDownloadHeaders(downloadPage, caught.url);
+			headers.Referer = downloadPage.url();
+			return {
+				body: "",
+				url: downloadPage.url(),
+				caughtDownload: {
+					downloadURL: caught.url,
+					suggestedFilename: sanitizeFilename(caught.suggestedFilename),
+					headers,
+				},
+			};
+		} finally {
+			browserCdp.off("Browser.downloadWillBegin", onDownload);
+			await browserCdp.detach().catch(() => {});
+		}
 	} finally {
 		await browser?.close().catch(() => {});
 	}

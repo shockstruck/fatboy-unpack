@@ -28,6 +28,7 @@ import {
 	parseUnrarProgress,
 } from "./extraction-progress";
 import {
+	type FileCryptLink,
 	requestFileCryptResource,
 	unlockFileCryptContainer,
 } from "./filecrypt";
@@ -1634,28 +1635,34 @@ async function requestManualDownloadAcknowledgement(
 // Groups mirrors of the same file by name and keeps only the best-ranked
 // link per file (priority-0 hosters included — the user can still click
 // through them, unlike the fully-automated path).
-function pickBestLinksPerFile(
-	links: { name: string; url: string }[],
-): { name: string; url: string }[] {
-	const byName = new Map<string, { name: string; url: string }[]>();
+function pickBestLinksPerFile<T extends { name: string; url: string }>(
+	links: T[],
+): T[] {
+	const byName = new Map<string, T[]>();
 	for (const link of links) {
 		byName.set(link.name, [...(byName.get(link.name) ?? []), link]);
 	}
-	const picked: { name: string; url: string }[] = [];
-	byName.forEach((mirrors, name) => {
+	const picked: T[] = [];
+	byName.forEach((mirrors) => {
 		const ranked = rankLinksKeepingLowPriority(mirrors);
-		if (ranked.length > 0) picked.push({ name, url: ranked[0].url });
+		if (ranked.length > 0) picked.push(ranked[0]);
 	});
 	return picked;
 }
 
-// Shared resolution for a set of unlocked FileCrypt links: dedupe by URL,
-// take the fully-automated FuckingFast path when available, otherwise fall
-// back to the interactive download catcher. `askForInput` is optional so a
-// caller that already asked once for a whole batch (see
-// resolveAutomaticFitGirlUpdates) can skip asking again per group.
+function needsManualDownload(links: FileCryptLink[]): boolean {
+	return (
+		!hasFuckingFastLink(links) &&
+		links.some((link) => link.caughtDownload === undefined)
+	);
+}
+
+// Shared resolution for unlocked FileCrypt links: use downloads already
+// caught inside the live FileCrypt browser, take the automated FuckingFast
+// path when available, and send only unresolved links to the standalone
+// catcher. `askForInput` remains optional for callers that already asked.
 async function resolveDirectDownloadFiles(
-	unlocked: { name: string; url: string }[],
+	unlocked: FileCryptLink[],
 	options: {
 		log: (message: string) => void;
 		askForInput?: AskForInput;
@@ -1669,7 +1676,10 @@ async function resolveDirectDownloadFiles(
 		new Map(unlocked.map((link) => [link.url, link])).values(),
 	);
 
-	if (hasFuckingFastLink(deduped)) {
+	if (
+		deduped.every((link) => link.caughtDownload === undefined) &&
+		hasFuckingFastLink(deduped)
+	) {
 		const fuckingFastLinks = deduped.filter((link) => {
 			try {
 				return resolveServiceFromUrl(link.url).name === "FuckingFast";
@@ -1685,32 +1695,40 @@ async function resolveDirectDownloadFiles(
 		throw new Error("No usable download links were found");
 	}
 
-	if (options.askForInput) {
+	const uncaught = picked.filter((link) => link.caughtDownload === undefined);
+	if (options.askForInput && uncaught.length > 0) {
 		await requestManualDownloadAcknowledgement(options.askForInput);
 	}
 
-	const caught = await catchUserDownloads(picked, {
-		onStatus: options.log,
-		onCaught: (linkName, index, total) =>
-			addon.notify({
-				message:
-					index < total
-						? `Caught "${linkName}" (${index}/${total}) — next download page is loading`
-						: `Caught "${linkName}" (${index}/${total}) — all downloads caught`,
-				id: "fatboy-unpack-manual-download-caught",
-				type: "success",
-			}),
-	});
+	const caught =
+		uncaught.length > 0
+			? await catchUserDownloads(uncaught, {
+					onStatus: options.log,
+					onCaught: (linkName, index, total) =>
+						addon.notify({
+							message:
+								index < total
+									? `Caught "${linkName}" (${index}/${total}) — next download page is loading`
+									: `Caught "${linkName}" (${index}/${total}) — all downloads caught`,
+							id: "fatboy-unpack-manual-download-caught",
+							type: "success",
+						}),
+				})
+			: [];
 
-	return caught.map((result, index) => ({
-		name: sanitizeDownloadedFileName(
-			picked[index].name,
-			result.suggestedFilename,
-			`${options.fallbackNamePrefix}${index}.rar`,
-		),
-		downloadURL: result.downloadURL,
-		headers: result.headers,
-	}));
+	let caughtIndex = 0;
+	return picked.map((link, index) => {
+		const result = link.caughtDownload ?? caught[caughtIndex++];
+		return {
+			name: sanitizeDownloadedFileName(
+				link.name,
+				result.suggestedFilename,
+				`${options.fallbackNamePrefix}${index}.rar`,
+			),
+			downloadURL: result.downloadURL,
+			headers: result.headers,
+		};
+	});
 }
 
 async function resolveAutomaticFitGirlUpdates(
@@ -1744,7 +1762,7 @@ async function resolveAutomaticFitGirlUpdates(
 	}
 
 	// Ask once for the whole run, not once per update group or per link.
-	if (unlockedByUpdate.some((links) => !hasFuckingFastLink(links))) {
+	if (unlockedByUpdate.some(needsManualDownload)) {
 		await requestManualDownloadAcknowledgement(askForInput);
 	}
 

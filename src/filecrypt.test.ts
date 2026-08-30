@@ -206,6 +206,38 @@ describe("unlockFileCryptContainer", () => {
 			Referer: "https://filecrypt.cc/Container/session.html",
 		});
 	});
+
+	test("returns a download caught before the rendered browser closes", async () => {
+		const request: FileCryptRequest = async (url) => ({
+			body: `<div class="pow-captcha"></div>`,
+			url,
+		});
+		const caughtDownload = {
+			downloadURL: "https://cdn.datanodes.to/files/update.rar",
+			suggestedFilename: "update.rar",
+			headers: {
+				Cookie: "datanodes_session=live-browser",
+				Referer: "https://datanodes.to/download/update",
+			},
+		};
+
+		await expect(
+			unlockFileCryptContainer("https://filecrypt.cc/Container/live.html", {
+				request,
+				renderContainer: async () => ({
+					body: "",
+					url: "https://datanodes.to/download/update",
+					caughtDownload,
+				}),
+			}),
+		).resolves.toEqual([
+			{
+				name: "update.rar",
+				url: "https://datanodes.to/download/update",
+				caughtDownload,
+			},
+		]);
+	});
 });
 
 describe("parseGameMetadataHtml", () => {
