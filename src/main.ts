@@ -92,6 +92,14 @@ const UMU_BIN = join(
 	"umu",
 	"umu-run",
 );
+// The puppeteer stack emits stray async rejections when tabs close mid-flight
+// (popup storms, our own popup policy, browser teardown). None of them should
+// take down the addon — the operation that cared already got its error via
+// its own await chain.
+process.on("unhandledRejection", (reason) => {
+	console.error("[fatboy-unpack] unhandled rejection:", reason);
+});
+
 // Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
 	author: "Fat-Addons",

@@ -1,15 +1,14 @@
-import puppeteer from "puppeteer";
 // puppeteer-real-browser's connect() is typed against
 // rebrowser-puppeteer-core, while the adblocker is typed against the
 // `puppeteer` alias — same runtime classes (rebrowser 24.8.1), nominally
 // different types, hence the one cast in enableAdblock.
 import type { HTTPRequest, Target } from "rebrowser-puppeteer-core";
 import type { Page as AdblockerPage } from "puppeteer";
-import { connect } from "puppeteer-real-browser";
 import { PuppeteerExtraPluginAdblocker } from "puppeteer-extra-plugin-adblocker";
 import { getDomain } from "tldts-experimental";
 import { withBrowserWindow } from "./browser-queue";
 import { resolveServiceFromUrl } from "./matcher";
+import { connectRealBrowser } from "./real-browser";
 
 export type CaughtDownload = {
 	downloadURL: string;
@@ -19,7 +18,7 @@ export type CaughtDownload = {
 
 type CatcherLink = { name: string; url: string };
 
-type CatcherBrowser = Awaited<ReturnType<typeof connect>>["browser"];
+type CatcherBrowser = Awaited<ReturnType<typeof connectRealBrowser>>["browser"];
 type CatcherPage = Awaited<ReturnType<CatcherBrowser["newPage"]>>;
 type CatcherCDPSession = Awaited<ReturnType<CatcherPage["createCDPSession"]>>;
 
@@ -385,13 +384,7 @@ async function catchUserDownloadsNow(
 	let browser: CatcherBrowser | undefined;
 	try {
 		options.onStatus("Opening a browser window for manual downloads...");
-		const connection = await connect({
-			headless: false,
-			turnstile: true,
-			args: ["--no-sandbox", "--disable-setuid-sandbox"],
-			customConfig: { chromePath: puppeteer.executablePath() },
-			connectOption: { defaultViewport: null },
-		});
+		const connection = await connectRealBrowser();
 		browser = connection.browser;
 		let page: CatcherPage = connection.page;
 		await enableAdblock(page, engine);

@@ -1,6 +1,5 @@
-import puppeteer from "puppeteer";
-import { connect } from "puppeteer-real-browser";
 import { withBrowserWindow } from "./browser-queue";
+import { connectRealBrowser } from "./real-browser";
 
 export function catchDownload(
 	url: string,
@@ -15,16 +14,10 @@ async function catchDownloadNow(
 ): Promise<string | null> {
 	const ffLog = (msg: string) => console.log(`[FuckingFast] ${msg}`);
 
-	let browser: Awaited<ReturnType<typeof connect>>["browser"] | undefined;
+	let browser: Awaited<ReturnType<typeof connectRealBrowser>>["browser"] | undefined;
 	try {
 		ffLog(`launching browser for ${url}`);
-		const connection = await connect({
-			headless: false,
-			turnstile: true,
-			args: ["--no-sandbox", "--disable-setuid-sandbox"],
-			customConfig: { chromePath: puppeteer.executablePath() },
-			connectOption: { defaultViewport: null },
-		});
+		const connection = await connectRealBrowser();
 		browser = connection.browser;
 		const page = connection.page;
 
@@ -118,15 +111,9 @@ export function renderFileCryptContainer(url: string): Promise<string> {
 }
 
 async function renderFileCryptContainerNow(url: string): Promise<string> {
-	let browser: Awaited<ReturnType<typeof connect>>["browser"] | undefined;
+	let browser: Awaited<ReturnType<typeof connectRealBrowser>>["browser"] | undefined;
 	try {
-		const connection = await connect({
-			headless: false,
-			turnstile: true,
-			args: ["--no-sandbox", "--disable-setuid-sandbox"],
-			customConfig: { chromePath: puppeteer.executablePath() },
-			connectOption: { defaultViewport: null },
-		});
+		const connection = await connectRealBrowser();
 		browser = connection.browser;
 		await connection.page.goto(url, { waitUntil: "domcontentloaded" });
 		await connection.page.waitForSelector("body");
