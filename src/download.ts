@@ -15,9 +15,39 @@ type BrowserPage = Awaited<
 		Awaited<ReturnType<typeof connectRealBrowser>>["browser"]["pages"]
 	>
 >[number];
+type BrowserElement = NonNullable<
+	Awaited<ReturnType<BrowserPage["$"]>>
+>;
+type BrowserCDPSession = Awaited<
+	ReturnType<BrowserPage["createCDPSession"]>
+>;
+
+type NetworkRequestEvent = {
+	requestId: string;
+	request: {
+		url: string;
+		method: string;
+		headers: Record<string, string | number>;
+	};
+};
+
+type NetworkRequestExtraInfoEvent = {
+	requestId: string;
+	headers: Record<string, string | number>;
+};
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeRequestHeaders(
+	headers: Record<string, string | number>,
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(headers)
+			.filter(([name]) => !name.startsWith(":"))
+			.map(([name, value]) => [name.toLowerCase(), String(value)]),
+	);
 }
 
 function sanitizeFilename(name: string | null | undefined): string | null {
@@ -35,18 +65,49 @@ function isKnownDownloadHoster(url: string): boolean {
 	}
 }
 
-async function captureFileCryptSessionHeaders(
+async function dismissFileCryptAdOverlay(page: BrowserPage): Promise<boolean> {
+	return page.evaluate(() => {
+		for (const host of document.querySelectorAll<HTMLElement>("[doskip]")) {
+			const closeButton = host.shadowRoot?.querySelector<HTMLElement>("#closeButton");
+			if (!closeButton) continue;
+			closeButton.click();
+			return true;
+		}
+		return false;
+	});
+}
+
+async function findFileCryptHosterLink(
 	page: BrowserPage,
-	containerUrl: string,
-): Promise<Record<string, string>> {
-	const headers: Record<string, string> = { Referer: containerUrl };
-	const cookies = await page.cookies(containerUrl).catch(() => []);
-	if (cookies.length > 0) {
-		headers.Cookie = cookies
-			.map((cookie) => `${cookie.name}=${cookie.value}`)
-			.join("; ");
+): Promise<BrowserElement | null> {
+	const buttons = await page
+		.$$('a.button.download[href*="/Link/"], [onclick^="openLink"]')
+		.catch(() => []);
+	let fallback: BrowserElement | null = buttons[0] ?? null;
+
+	for (const button of buttons) {
+		const advertisedUrl = await button
+			.evaluate((element) => {
+				const externalLink = (element as Element)
+					.closest("tr")
+					?.querySelector("a.external_link");
+				return externalLink instanceof HTMLAnchorElement
+					? externalLink.href
+					: null;
+			})
+			.catch(() => null);
+		if (!advertisedUrl) continue;
+		try {
+			if (resolveServiceFromUrl(advertisedUrl).name === "DataNodes") {
+				return button;
+			}
+			fallback ??= button;
+		} catch {
+			// Keep the first usable link when the host label is unrecognized.
+		}
 	}
-	return headers;
+
+	return fallback;
 }
 
 export function catchDownload(
@@ -166,6 +227,45 @@ async function renderFileCryptContainerNow(
 		const connection = await connectRealBrowser();
 		browser = connection.browser;
 		const browserCdp = await browser.target().createCDPSession();
+		const networkSessions = new Map<BrowserPage, BrowserCDPSession>();
+		const requestUrls = new Map<string, string>();
+		const ignoredRequestIds = new Set<string>();
+		const pendingExtraHeaders = new Map<string, Record<string, string>>();
+		const requestHeadersByUrl = new Map<string, Record<string, string>>();
+		const watchRequests = async (page: BrowserPage): Promise<void> => {
+			if (networkSessions.has(page)) return;
+			const cdp = await page.createCDPSession();
+			const onRequest = (event: NetworkRequestEvent) => {
+				requestUrls.set(event.requestId, event.request.url);
+				if (event.request.method === "HEAD") {
+					ignoredRequestIds.add(event.requestId);
+					return;
+				}
+				const headers = {
+					...normalizeRequestHeaders(event.request.headers),
+					...pendingExtraHeaders.get(event.requestId),
+				};
+				pendingExtraHeaders.delete(event.requestId);
+				requestHeadersByUrl.set(event.request.url, headers);
+			};
+			const onExtraInfo = (event: NetworkRequestExtraInfoEvent) => {
+				if (ignoredRequestIds.has(event.requestId)) return;
+				const extra = normalizeRequestHeaders(event.headers);
+				const requestUrl = requestUrls.get(event.requestId);
+				if (!requestUrl) {
+					pendingExtraHeaders.set(event.requestId, extra);
+					return;
+				}
+				requestHeadersByUrl.set(requestUrl, {
+					...requestHeadersByUrl.get(requestUrl),
+					...extra,
+				});
+			};
+			cdp.on("Network.requestWillBeSent", onRequest);
+			cdp.on("Network.requestWillBeSentExtraInfo", onExtraInfo);
+			await cdp.send("Network.enable");
+			networkSessions.set(page, cdp);
+		};
 		type DownloadBeginEvent = {
 			url: string;
 			guid: string;
@@ -182,6 +282,7 @@ async function renderFileCryptContainerNow(
 				downloadPath: "/tmp",
 				eventsEnabled: true,
 			});
+			await watchRequests(connection.page);
 			await connection.page.goto(url, { waitUntil: "domcontentloaded" });
 			await connection.page.waitForSelector("body");
 
@@ -195,6 +296,7 @@ async function renderFileCryptContainerNow(
 			while (Date.now() < deadline && !caught) {
 				const pages = await browser.pages();
 				for (const page of pages) {
+					await watchRequests(page).catch(() => {});
 					const pageUrl = page.url();
 					if (isKnownDownloadHoster(pageUrl)) {
 						hosterPage = page;
@@ -227,24 +329,9 @@ async function renderFileCryptContainerNow(
 				}
 
 				if (!hosterPage) {
-					const dlcButton = await connection.page
-						.$(".dlcdownload")
-						.catch(() => null);
-					if (dlcButton) {
-						return {
-							body: await connection.page.content(),
-							url: connection.page.url(),
-							requestHeaders: await captureFileCryptSessionHeaders(
-								connection.page,
-								url,
-							),
-						};
-					}
-
+					await dismissFileCryptAdOverlay(connection.page).catch(() => false);
 					if (!clickedOpenLink) {
-						const openLink = await connection.page
-							.$('[onclick^="openLink"]')
-							.catch(() => null);
+						const openLink = await findFileCryptHosterLink(connection.page);
 						if (openLink) {
 							clickedOpenLink = true;
 							await openLink.click().catch(() =>
@@ -273,8 +360,18 @@ async function renderFileCryptContainerNow(
 				.send("Browser.cancelDownload", { guid: caught.guid })
 				.catch(() => {});
 			const downloadPage = hosterPage ?? connection.page;
-			const headers = await captureDownloadHeaders(downloadPage, caught.url);
-			headers.Referer = downloadPage.url();
+			const requestHeaders = requestHeadersByUrl.get(caught.url);
+			const fallbackHeaders = await captureDownloadHeaders(
+				downloadPage,
+				caught.url,
+			);
+			const headers = requestHeaders
+				? { ...requestHeaders }
+				: normalizeRequestHeaders(fallbackHeaders);
+			if (!headers.cookie && fallbackHeaders.Cookie) {
+				headers.cookie = fallbackHeaders.Cookie;
+			}
+			headers.referer ??= downloadPage.url();
 			return {
 				body: "",
 				url: downloadPage.url(),
@@ -286,6 +383,9 @@ async function renderFileCryptContainerNow(
 			};
 		} finally {
 			browserCdp.off("Browser.downloadWillBegin", onDownload);
+			await Promise.allSettled(
+				Array.from(networkSessions.values(), (session) => session.detach()),
+			);
 			await browserCdp.detach().catch(() => {});
 		}
 	} finally {

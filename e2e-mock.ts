@@ -32,20 +32,17 @@ Bun.serve({
 				return new Response(
 					`<!doctype html><title>FileCrypt</title><body>
 						<h1>Verified container</h1>
-						<script>
-							window.openLink = () => {
-								const hoster = window.open('about:blank');
-								setTimeout(() => {
-									hoster.location = '${HOSTER}/host/1';
-								}, 500);
-							};
-							setTimeout(() => {
-								const link = document.createElement('a');
-								link.setAttribute('onclick', 'openLink("verified-link")');
-								link.textContent = 'Continue';
-								document.body.append(link);
-							}, 500);
-						</script>
+						<button class="dlcdownload">DLC</button>
+						<table>
+							<tr>
+								<td><a class="external_link" href="https://fuckingfast.co">fuckingfast.co</a></td>
+								<td><a class="button download" href="/Link/slow.html" target="slow">Download</a></td>
+							</tr>
+							<tr>
+								<td><a class="external_link" href="https://datanodes.to">datanodes.to</a></td>
+								<td><a class="button download" href="/Link/verified.html" target="verified">Download</a></td>
+							</tr>
+						</table>
 					</body>`,
 					{
 						headers: {
@@ -54,6 +51,10 @@ Bun.serve({
 						},
 					},
 				);
+			case "/Link/verified.html":
+				return Response.redirect(`${HOSTER}/host/1`, 302);
+			case "/Link/slow.html":
+				return Response.redirect(`${HOSTER}/host/2`, 302);
 			case "/host/1": {
 				// Real-world pattern: the download button opens an ad tab AND the
 				// actual download popup in the same click gesture. Also sets a
@@ -127,13 +128,20 @@ const remaining = await catchUserDownloads(
 	},
 );
 const results = [first, ...remaining];
+const firstHeaders = Object.fromEntries(
+	Object.entries(results[0]?.headers ?? {}).map(([name, value]) => [
+		name.toLowerCase(),
+		value,
+	]),
+);
 
 console.log(`[e2e] RESULTS ${JSON.stringify(results, null, 2)}`);
 const ok =
 	results.length === 2 &&
 	results[0]!.downloadURL.endsWith("/dl/game.part1.rar") &&
 	results[1]!.downloadURL.endsWith("/dl/game.part2.rar") &&
+	Boolean(firstHeaders["user-agent"]) &&
 	// The session cookie set by /host/1 must ride along for OGI's re-request.
-	(results[0]!.headers.Cookie ?? "").includes("hoster_session=mock-session-token");
+	(firstHeaders.cookie ?? "").includes("hoster_session=mock-session-token");
 console.log(ok ? "[e2e] PASS" : "[e2e] FAIL");
 process.exit(ok ? 0 : 1);
