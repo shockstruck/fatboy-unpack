@@ -3,11 +3,12 @@ import puppeteer from "puppeteer";
 // rebrowser-puppeteer-core, while the adblocker is typed against the
 // `puppeteer` alias — same runtime classes (rebrowser 24.8.1), nominally
 // different types, hence the one cast in enableAdblock.
-import type { HTTPRequest } from "rebrowser-puppeteer-core";
+import type { HTTPRequest, Target } from "rebrowser-puppeteer-core";
 import type { Page as AdblockerPage } from "puppeteer";
 import { connect } from "puppeteer-real-browser";
 import { PuppeteerExtraPluginAdblocker } from "puppeteer-extra-plugin-adblocker";
 import { getDomain } from "tldts-experimental";
+import { withBrowserWindow } from "./browser-queue";
 import { resolveServiceFromUrl } from "./matcher";
 
 export type CaughtDownload = {
@@ -20,6 +21,7 @@ type CatcherLink = { name: string; url: string };
 
 type CatcherBrowser = Awaited<ReturnType<typeof connect>>["browser"];
 type CatcherPage = Awaited<ReturnType<CatcherBrowser["newPage"]>>;
+type CatcherCDPSession = Awaited<ReturnType<CatcherPage["createCDPSession"]>>;
 
 // Built once per process and disk-cached by the plugin. The explicit
 // interception priority puts the blocker into puppeteer's cooperative
@@ -86,6 +88,19 @@ export function isAllowedNavigation(
 	}
 }
 
+// New tabs are allowed only when they land on the hoster itself or on
+// FileCrypt (filecrypt.cc interstitials redirect into the hoster); every
+// other popup is a scam and gets closed. Callers decide *when* a popup's URL
+// is settled enough to judge.
+export function isAllowedPopup(url: string, hosterUrl: string): boolean {
+	try {
+		if (resolveServiceFromUrl(url).name === "FileCrypt") return true;
+	} catch {
+		return false;
+	}
+	return isAllowedNavigation(url, hosterUrl);
+}
+
 // puppeteer-extra only applies plugins on "targetcreated", and the working
 // tab already exists when puppeteer-real-browser connects — so passing the
 // plugin to connect() never adblocks the tab the user actually browses in.
@@ -110,24 +125,37 @@ async function enableAdblock(
 	}
 }
 
-// Close every page except the working tab and refocus it. Used both as a
-// "targetcreated" listener and as a delayed sweep, since popups opened
-// immediately on navigation can beat the listener.
+// Close every page except the working tab and explicitly allowed popups,
+// then refocus the working tab. Used both after judging a new target and as
+// a delayed sweep, since popups opened immediately on navigation can beat
+// the "targetcreated" listener.
 async function closePopupPages(
 	browser: CatcherBrowser,
 	mainPage: CatcherPage,
+	allowedPopups: Set<unknown>,
 ): Promise<void> {
 	try {
 		const pages = await browser.pages();
 		for (const page of pages) {
-			if (page !== mainPage) {
+			if (page !== mainPage && !allowedPopups.has(page)) {
 				await page.close().catch(() => {});
 			}
 		}
-		await mainPage.bringToFront();
+		if (allowedPopups.size === 0) await mainPage.bringToFront();
 	} catch {
 		// Browser or page may already be closing.
 	}
+}
+
+// Scam popups open on about:blank and only then navigate; give a new tab a
+// short grace period to reveal its real URL before judging it.
+async function resolvePopupUrl(popup: CatcherPage): Promise<string> {
+	for (let attempt = 0; attempt < 16; attempt++) {
+		const url = popup.url();
+		if (url && url !== "about:blank") return url;
+		await sleep(250);
+	}
+	return popup.url();
 }
 
 async function captureHeaders(
@@ -157,37 +185,27 @@ async function captureHeaders(
 	}
 }
 
-async function catchOneDownload(
-	browser: CatcherBrowser,
-	page: CatcherPage,
-	link: CatcherLink,
-	timeoutMs: number,
-): Promise<CaughtDownload> {
-	const cdp = await page.createCDPSession();
-	await cdp.send("Browser.setDownloadBehavior", {
-		behavior: "allow",
-		downloadPath: "/tmp",
-		eventsEnabled: true,
-	});
-
-	// Cooperative-mode lockdown: abort any main-frame navigation that leaves
-	// the hoster (see isAllowedNavigation). Server-side redirect chains that
-	// started on an allowed URL stay allowed — download tokens commonly 302
-	// out to an unrelated CDN. Subframes are untouched so captcha widgets
-	// keep working; ad subresources are the adblocker's job.
-	const blocked = { count: 0 };
-	const lockdown = (request: HTTPRequest): void => {
+// Cooperative-mode lockdown: abort any main-frame navigation the `allow`
+// predicate rejects. Server-side redirect chains that started on an allowed
+// URL stay allowed — download tokens commonly 302 out to an unrelated CDN.
+// Subframes are untouched so captcha widgets keep working; ad subresources
+// are the adblocker's job.
+function createNavigationLockdown(
+	hosterUrl: string,
+	allow: (url: string, hosterUrl: string) => boolean,
+	blocked: { count: number },
+): (request: HTTPRequest) => void {
+	return (request) => {
 		if (request.isInterceptResolutionHandled()) return;
 		const frame = request.frame();
 		const isMainFrameNavigation =
 			request.isNavigationRequest() &&
 			frame !== null &&
 			frame.parentFrame() === null;
-		if (isMainFrameNavigation && !isAllowedNavigation(request.url(), link.url)) {
+		if (isMainFrameNavigation && !allow(request.url(), hosterUrl)) {
 			const chainStart = request.redirectChain()[0];
 			const cameFromAllowedUrl =
-				chainStart !== undefined &&
-				isAllowedNavigation(chainStart.url(), link.url);
+				chainStart !== undefined && allow(chainStart.url(), hosterUrl);
 			if (!cameFromAllowedUrl) {
 				blocked.count += 1;
 				void request.abort("blockedbyclient", 0);
@@ -196,16 +214,55 @@ async function catchOneDownload(
 		}
 		void request.continue(request.continueRequestOverrides(), 0);
 	};
+}
+
+type DownloadBeginEvent = {
+	url: string;
+	guid: string;
+	suggestedFilename?: string;
+};
+
+// Downloads must be armed per CDP session — an event from a tab whose
+// session never enabled download events is silently lost. Returns the
+// session so the caller can cancel the caught transfer through it.
+async function armDownloadCatcher(
+	page: CatcherPage,
+	onDownload: (event: DownloadBeginEvent, cdp: CatcherCDPSession) => void,
+): Promise<CatcherCDPSession> {
+	const cdp = await page.createCDPSession();
+	await cdp.send("Browser.setDownloadBehavior", {
+		behavior: "allow",
+		downloadPath: "/tmp",
+		eventsEnabled: true,
+	});
+	cdp.on("Browser.downloadWillBegin", (event) => onDownload(event, cdp));
+	return cdp;
+}
+
+async function catchOneDownload(
+	browser: CatcherBrowser,
+	page: CatcherPage,
+	link: CatcherLink,
+	timeoutMs: number,
+	engine: AdblockEngine | null,
+): Promise<CaughtDownload> {
+	const blocked = { count: 0 };
+	const lockdown = createNavigationLockdown(
+		link.url,
+		isAllowedNavigation,
+		blocked,
+	);
 	page.on("request", lockdown);
 
 	// Arm the catcher before navigating so a download that fires instantly on
-	// load is still caught.
+	// load is still caught. Allowed popups are armed too (below) — the user
+	// may press the download button there — so resolution is shared.
+	let settled = false;
+	let onDownload!: (event: DownloadBeginEvent, cdp: CatcherCDPSession) => void;
 	const downloadPromise = new Promise<{
-		url: string;
-		guid: string;
-		suggestedFilename?: string;
+		event: DownloadBeginEvent;
+		cdp: CatcherCDPSession;
 	}>((resolve, reject) => {
-		let settled = false;
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
@@ -219,16 +276,38 @@ async function catchOneDownload(
 				),
 			);
 		}, timeoutMs);
-		cdp.on("Browser.downloadWillBegin", (event) => {
+		onDownload = (event, cdp) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			resolve(event);
-		});
+			resolve({ event, cdp });
+		};
 	});
+	await armDownloadCatcher(page, onDownload);
 
-	const popupHandler = () => {
-		closePopupPages(browser, page);
+	// New tabs: allow same-hoster and FileCrypt tabs (adblocked and locked
+	// down like the main tab), close everything else — those are the scam
+	// tabs. The user may end up pressing the download button in an allowed
+	// popup, so it gets the same treatment as the working tab.
+	const allowedPopups = new Set<CatcherPage>();
+	const popupHandler = async (target: Target) => {
+		try {
+			const popup = target.type() === "page" ? await target.page() : null;
+			if (popup && popup !== page && !allowedPopups.has(popup)) {
+				const url = await resolvePopupUrl(popup);
+				if (isAllowedPopup(url, link.url)) {
+					allowedPopups.add(popup);
+					await enableAdblock(popup, engine);
+					popup.on("request", lockdown);
+					popup.on("close", () => allowedPopups.delete(popup));
+					await armDownloadCatcher(popup, onDownload);
+					return;
+				}
+			}
+		} catch {
+			// Judging failed (tab already closed, browser going down) — sweep.
+		}
+		await closePopupPages(browser, page, allowedPopups);
 	};
 	browser.on("targetcreated", popupHandler);
 	try {
@@ -236,9 +315,9 @@ async function catchOneDownload(
 		// net::ERR_ABORTED; that's fine, downloadPromise still catches it.
 		await page.goto(link.url, { waitUntil: "domcontentloaded" }).catch(() => {});
 		await sleep(1000);
-		await closePopupPages(browser, page);
+		await closePopupPages(browser, page, allowedPopups);
 
-		const caught = await downloadPromise;
+		const { event: caught, cdp } = await downloadPromise;
 
 		try {
 			await cdp.send("Browser.cancelDownload", { guid: caught.guid });
@@ -257,24 +336,30 @@ async function catchOneDownload(
 	} finally {
 		browser.off("targetcreated", popupHandler);
 		page.off("request", lockdown);
+		for (const popup of allowedPopups) {
+			await popup.close().catch(() => {});
+		}
 	}
 }
+
+type CatchUserDownloadsOptions = {
+	onStatus: (message: string) => void;
+	// Fired after each successful catch, before the next page loads —
+	// main.ts surfaces this as a toast so the user knows another click
+	// is coming.
+	onCaught?: (linkName: string, index: number, total: number) => void;
+	timeoutMsPerLink?: number;
+};
 
 // Opens one interactive, non-headless browser session and walks the user
 // through catching a download for each link: the user solves whatever the
 // hoster throws at them and presses its download button; we never fight the
-// site, just cancel the transfer once we have the real URL.
+// site, just cancel the transfer once we have the real URL. Queued through
+// withBrowserWindow so only one interactive window exists at a time.
 export async function catchUserDownloads(
 	links: CatcherLink[],
-	options: {
-		onStatus: (message: string) => void;
-		timeoutMsPerLink?: number;
-	},
+	options: CatchUserDownloadsOptions,
 ): Promise<CaughtDownload[]> {
-	const timeoutMs = options.timeoutMsPerLink ?? 5 * 60_000;
-	const results: CaughtDownload[] = [];
-	const failed: string[] = [];
-
 	// First run fetches filter lists from the network (a few seconds);
 	// afterwards the serialized engine is loaded from disk cache.
 	options.onStatus("Loading adblock filter lists...");
@@ -284,6 +369,18 @@ export async function catchUserDownloads(
 			"Adblock filter lists unavailable; continuing with redirect protection only.",
 		);
 	}
+
+	return withBrowserWindow(() => catchUserDownloadsNow(links, options, engine));
+}
+
+async function catchUserDownloadsNow(
+	links: CatcherLink[],
+	options: CatchUserDownloadsOptions,
+	engine: AdblockEngine | null,
+): Promise<CaughtDownload[]> {
+	const timeoutMs = options.timeoutMsPerLink ?? 5 * 60_000;
+	const results: CaughtDownload[] = [];
+	const failed: string[] = [];
 
 	let browser: CatcherBrowser | undefined;
 	try {
@@ -299,12 +396,19 @@ export async function catchUserDownloads(
 		let page: CatcherPage = connection.page;
 		await enableAdblock(page, engine);
 
-		for (const link of links) {
+		for (const [index, link] of links.entries()) {
 			options.onStatus(`Waiting for you to start the download for "${link.name}"...`);
 			try {
-				const caught = await catchOneDownload(browser, page, link, timeoutMs);
+				const caught = await catchOneDownload(
+					browser,
+					page,
+					link,
+					timeoutMs,
+					engine,
+				);
 				results.push(caught);
 				options.onStatus(`Caught download for "${link.name}".`);
+				options.onCaught?.(link.name, index + 1, links.length);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				options.onStatus(`Could not catch a download for "${link.name}": ${message}`);

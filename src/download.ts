@@ -1,7 +1,15 @@
 import puppeteer from "puppeteer";
 import { connect } from "puppeteer-real-browser";
+import { withBrowserWindow } from "./browser-queue";
 
-export async function catchDownload(
+export function catchDownload(
+	url: string,
+	selector: string,
+): Promise<string | null> {
+	return withBrowserWindow(() => catchDownloadNow(url, selector));
+}
+
+async function catchDownloadNow(
 	url: string,
 	selector: string,
 ): Promise<string | null> {
@@ -105,7 +113,11 @@ export async function catchDownload(
 	}
 }
 
-export async function renderFileCryptContainer(url: string): Promise<string> {
+export function renderFileCryptContainer(url: string): Promise<string> {
+	return withBrowserWindow(() => renderFileCryptContainerNow(url));
+}
+
+async function renderFileCryptContainerNow(url: string): Promise<string> {
 	let browser: Awaited<ReturnType<typeof connect>>["browser"] | undefined;
 	try {
 		const connection = await connect({

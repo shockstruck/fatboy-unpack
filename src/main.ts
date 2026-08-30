@@ -804,12 +804,14 @@ addon.on("setup", (data, event) => {
 						option
 							.setButtonText("Retry")
 							.setName("retry")
+							.setDisplayName("Retry")
 							.setDescription("Do you want to retry the download?"),
 					)
 					.addActionOption((option) =>
 						option
 							.setButtonText("Continue")
 							.setName("continue")
+							.setDisplayName("Continue")
 							.setDescription("Do you want to cancel the download?"),
 					),
 			);
@@ -1615,6 +1617,7 @@ async function requestManualDownloadAcknowledgement(
 			option
 				.setButtonText("Continue")
 				.setName("acknowledge")
+				.setDisplayName("Continue")
 				.setDescription("I understand and will click each download button."),
 		),
 	);
@@ -1678,7 +1681,18 @@ async function resolveDirectDownloadFiles(
 		await requestManualDownloadAcknowledgement(options.askForInput);
 	}
 
-	const caught = await catchUserDownloads(picked, { onStatus: options.log });
+	const caught = await catchUserDownloads(picked, {
+		onStatus: options.log,
+		onCaught: (linkName, index, total) =>
+			addon.notify({
+				message:
+					index < total
+						? `Caught "${linkName}" (${index}/${total}) — next download page is loading`
+						: `Caught "${linkName}" (${index}/${total}) — all downloads caught`,
+				id: "fatboy-unpack-manual-download-caught",
+				type: "success",
+			}),
+	});
 
 	return caught.map((result, index) => ({
 		name: sanitizeDownloadedFileName(
@@ -1708,14 +1722,18 @@ async function resolveAutomaticFitGirlUpdates(
 			gameName,
 		);
 
-	const unlockedByUpdate = await Promise.all(
-		updates.map((update) =>
-			unlockFileCryptContainer(update.url, {
+	// Sequential on purpose: unlocking a container can open a rendering
+	// browser window, and parallel unlocks would open them all at once.
+	const unlockedByUpdate: Awaited<ReturnType<typeof unlockFileCryptContainer>>[] =
+		[];
+	for (const update of updates) {
+		unlockedByUpdate.push(
+			await unlockFileCryptContainer(update.url, {
 				request: requestFileCryptResource,
 				renderContainer: renderFileCryptContainer,
 			}),
-		),
-	);
+		);
+	}
 
 	// Ask once for the whole run, not once per update group or per link.
 	if (unlockedByUpdate.some((links) => !hasFuckingFastLink(links))) {
@@ -1792,16 +1810,17 @@ addon.on("request-dl", (appID, info, event) => {
 		} else if (info.manifest.service === "FileCrypt") {
 			const containers = info.manifest.links as { name: string; url: string }[];
 			try {
-				const unlocked = (
-					await Promise.all(
-						containers.map((container) =>
-							unlockFileCryptContainer(container.url, {
-								request: requestFileCryptResource,
-								renderContainer: renderFileCryptContainer,
-							}),
-						),
-					)
-				).flat();
+				// Sequential on purpose: unlocking a container can open a rendering
+				// browser window, and parallel unlocks would open them all at once.
+				const unlocked: { name: string; url: string }[] = [];
+				for (const container of containers) {
+					unlocked.push(
+						...(await unlockFileCryptContainer(container.url, {
+							request: requestFileCryptResource,
+							renderContainer: renderFileCryptContainer,
+						})),
+					);
+				}
 				const baseFiles = await resolveDirectDownloadFiles(unlocked, {
 					log: (message) => event.log(message),
 					askForInput: (title, message, screen) =>
