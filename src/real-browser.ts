@@ -16,7 +16,15 @@ export async function connectRealBrowser(): Promise<RealBrowserConnection> {
 	const connection = await connect({
 		headless: false,
 		turnstile: true,
-		args: ["--no-sandbox", "--disable-setuid-sandbox"],
+		// Popup blocking is disabled because hoster download buttons open the
+		// real download in a popup; a blocked popup silently eats it behind
+		// the omnibox chip. Scam popups this lets through are closed by the
+		// download catcher's popup policy within seconds.
+		args: [
+			"--no-sandbox",
+			"--disable-setuid-sandbox",
+			"--disable-popup-blocking",
+		],
 		customConfig: { chromePath: puppeteer.executablePath() },
 		connectOption: { defaultViewport: null },
 		// On Linux the library spins up its own Xvfb and points Chrome at that
