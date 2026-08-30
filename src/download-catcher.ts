@@ -168,6 +168,21 @@ async function captureHeaders(
 		for (let waited = 0; waited < 2000 && !Object.keys(headers).length; waited += 100) {
 			await sleep(100);
 		}
+		// Session-locked hosters bind the download URL to browser cookies, so a
+		// cookie-less re-request from outside the browser would 403. Forward
+		// exactly what the browser would send to this URL.
+		try {
+			const { cookies } = await client.send("Network.getCookies", {
+				urls: [downloadURL],
+			});
+			if (cookies.length > 0) {
+				headers.Cookie = cookies
+					.map((cookie) => `${cookie.name}=${cookie.value}`)
+					.join("; ");
+			}
+		} catch {
+			// Cookie capture is best-effort; the URL and Referer still stand.
+		}
 		client.off("Network.responseReceived", onResponse);
 		await client.detach().catch(() => {});
 		return headers;

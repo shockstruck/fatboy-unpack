@@ -22,12 +22,17 @@ Bun.serve({
 	fetch(req) {
 		const url = new URL(req.url);
 		switch (url.pathname) {
-			case "/host/1":
+			case "/host/1": {
 				// Real-world pattern: the download button opens an ad tab AND the
-				// actual download popup in the same click gesture.
-				return page("Hoster page 1", `
+				// actual download popup in the same click gesture. Also sets a
+				// session cookie the way session-locked hosters do; the PASS check
+				// below asserts the catcher captured it.
+				const response = page("Hoster page 1", `
 					<h1>game.part1.rar</h1>
 					<button id="dl" style="font-size:28px;padding:20px" onclick="window.open('${SCAM}/scam');window.open('/popup/1')">Free Download</button>`);
+				response.headers.set("set-cookie", "hoster_session=mock-session-token; Path=/");
+				return response;
+			}
 			case "/popup/1":
 				return page("Download popup", `
 					<h1>Your download is ready</h1>
@@ -74,6 +79,8 @@ console.log(`[e2e] RESULTS ${JSON.stringify(results, null, 2)}`);
 const ok =
 	results.length === 2 &&
 	results[0]!.downloadURL.endsWith("/dl/game.part1.rar") &&
-	results[1]!.downloadURL.endsWith("/dl/game.part2.rar");
+	results[1]!.downloadURL.endsWith("/dl/game.part2.rar") &&
+	// The session cookie set by /host/1 must ride along for OGI's re-request.
+	(results[0]!.headers.Cookie ?? "").includes("hoster_session=mock-session-token");
 console.log(ok ? "[e2e] PASS" : "[e2e] FAIL");
 process.exit(ok ? 0 : 1);
