@@ -13,6 +13,7 @@ export type FileCryptLink = {
 export type FileCryptResponse = {
 	body: string;
 	url: string;
+	requestHeaders?: Record<string, string>;
 };
 
 export type FileCryptRequest = (
@@ -116,12 +117,14 @@ export async function unlockFileCryptContainer(
 ): Promise<FileCryptLink[]> {
 	const container = await dependencies.request(containerUrl);
 	let ids = parseFileCryptContainer(container.body);
+	let renderedRequestHeaders: Record<string, string> | undefined;
 	if (!ids.dlcId && ids.linkIds.length === 0 && dependencies.renderContainer) {
 		const rendered = await dependencies.renderContainer(containerUrl);
 		const renderedResponse =
 			typeof rendered === "string"
 				? { body: rendered, url: containerUrl }
 				: rendered;
+		renderedRequestHeaders = renderedResponse.requestHeaders;
 		ids = parseFileCryptContainer(renderedResponse.body);
 		// Single-link protected containers navigate the working tab straight to
 		// the hoster after verification instead of revealing openLink elements.
@@ -172,7 +175,12 @@ export async function unlockFileCryptContainer(
 				`/Link/${encodeURIComponent(id)}.html`,
 				containerUrl,
 			);
-			const response = await dependencies.request(linkUrl.toString());
+			const response = await dependencies.request(
+				linkUrl.toString(),
+				renderedRequestHeaders
+					? { headers: renderedRequestHeaders }
+					: undefined,
+			);
 			return {
 				name: linkName(response.url, index),
 				url: response.url,

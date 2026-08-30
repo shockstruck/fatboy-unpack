@@ -3,10 +3,40 @@ import {
 	type FileCryptResponse,
 	isExternalFileCryptDestination,
 } from "./filecrypt";
+import { resolveServiceFromUrl } from "./matcher";
 import { connectRealBrowser } from "./real-browser";
+
+type BrowserPage = Awaited<
+	ReturnType<
+		Awaited<ReturnType<typeof connectRealBrowser>>["browser"]["pages"]
+	>
+>[number];
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isKnownDownloadHoster(url: string): boolean {
+	try {
+		const service = resolveServiceFromUrl(url).name;
+		return service !== "Unknown" && service !== "FileCrypt";
+	} catch {
+		return false;
+	}
+}
+
+async function captureFileCryptSessionHeaders(
+	page: BrowserPage,
+	containerUrl: string,
+): Promise<Record<string, string>> {
+	const headers: Record<string, string> = { Referer: containerUrl };
+	const cookies = await page.cookies(containerUrl).catch(() => []);
+	if (cookies.length > 0) {
+		headers.Cookie = cookies
+			.map((cookie) => `${cookie.name}=${cookie.value}`)
+			.join("; ");
+	}
+	return headers;
 }
 
 export function catchDownload(
@@ -128,16 +158,37 @@ async function renderFileCryptContainerNow(
 		await connection.page.goto(url, { waitUntil: "domcontentloaded" });
 		await connection.page.waitForSelector("body");
 
-		// FileCrypt's protected single-link flow opens a duplicate/ad tab and
-		// navigates the original tab directly to the hoster. Keep the original
-		// focused, close every extra tab, and preserve that final URL instead of
-		// waiting three minutes for container controls that will never appear.
+		// FileCrypt may reveal link controls, navigate the original tab, or open
+		// the hoster in a new tab. Preserve recognized hoster tabs and carry the
+		// verified FileCrypt cookies forward when controls are revealed.
 		const deadline = Date.now() + 180_000;
+		const popupFirstSeen = new Map<BrowserPage, number>();
 		let externalUrl: string | null = null;
 		let externalSince = 0;
 		while (Date.now() < deadline) {
-			for (const page of await browser.pages()) {
-				if (page !== connection.page) await page.close().catch(() => {});
+			const pages = await browser.pages();
+			for (const page of pages) {
+				if (page === connection.page) continue;
+				const firstSeen = popupFirstSeen.get(page) ?? Date.now();
+				popupFirstSeen.set(page, firstSeen);
+				const popupUrl = page.url();
+				if (isKnownDownloadHoster(popupUrl)) {
+					return {
+						body: await page.content().catch(() => ""),
+						url: popupUrl,
+					};
+				}
+				const isPendingFileCryptPopup =
+					popupUrl === "about:blank" ||
+					!popupUrl ||
+					!isExternalFileCryptDestination(popupUrl, url);
+				if (
+					!isPendingFileCryptPopup ||
+					Date.now() - firstSeen >= 2500
+				) {
+					await page.close().catch(() => {});
+					popupFirstSeen.delete(page);
+				}
 			}
 
 			const currentUrl = connection.page.url();
@@ -160,6 +211,10 @@ async function renderFileCryptContainerNow(
 					return {
 						body: await connection.page.content(),
 						url: currentUrl,
+						requestHeaders: await captureFileCryptSessionHeaders(
+							connection.page,
+							url,
+						),
 					};
 				}
 			}

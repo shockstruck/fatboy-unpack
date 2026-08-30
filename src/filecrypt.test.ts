@@ -169,6 +169,43 @@ describe("unlockFileCryptContainer", () => {
 			},
 		]);
 	});
+
+	test("uses the verified browser session to resolve rendered link ids", async () => {
+		let linkRequestHeaders: HeadersInit | undefined;
+		const request: FileCryptRequest = async (url, init) => {
+			if (url.includes("/Container/")) {
+				return { body: `<div class="pow-captcha"></div>`, url };
+			}
+			linkRequestHeaders = init?.headers;
+			return {
+				body: "",
+				url: "https://datanodes.to/download/update-part1.rar.html",
+			};
+		};
+
+		await expect(
+			unlockFileCryptContainer("https://filecrypt.cc/Container/session.html", {
+				request,
+				renderContainer: async () => ({
+					body: `<a onclick="openLink('verified-link')">Download</a>`,
+					url: "https://filecrypt.cc/Container/session.html",
+					requestHeaders: {
+						Cookie: "PHPSESSID=verified-session",
+						Referer: "https://filecrypt.cc/Container/session.html",
+					},
+				}),
+			}),
+		).resolves.toEqual([
+			{
+				name: "update-part1.rar.html",
+				url: "https://datanodes.to/download/update-part1.rar.html",
+			},
+		]);
+		expect(linkRequestHeaders).toEqual({
+			Cookie: "PHPSESSID=verified-session",
+			Referer: "https://filecrypt.cc/Container/session.html",
+		});
+	});
 });
 
 describe("parseGameMetadataHtml", () => {

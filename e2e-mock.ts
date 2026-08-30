@@ -4,9 +4,12 @@
 // The real FileCrypt captcha backend is network-blocked here, so this covers
 // the catcher itself. Usage: DISPLAY=:99 FATBOY_E2E_AUTO=1 bun run e2e-mock.ts
 import { catchUserDownloads } from "./src/download-catcher";
+import { renderFileCryptContainer } from "./src/download";
+import { unlockFileCryptContainer } from "./src/filecrypt";
 
 const PORT = 18989;
-const HOSTER = `http://app.localtest.me:${PORT}`;
+const HOSTER = `http://datanodes.localtest.me:${PORT}`;
+const FILECRYPT = `http://filecrypt.localtest.me:${PORT}/Container/update.html`;
 const SCAM = `http://127.0.0.1:${PORT}`;
 const auto = process.env.FATBOY_E2E_AUTO === "1";
 
@@ -26,6 +29,26 @@ Bun.serve({
 	fetch(req) {
 		const url = new URL(req.url);
 		switch (url.pathname) {
+			case "/Container/update.html":
+				return new Response(
+					`<!doctype html><title>FileCrypt</title><body>
+						<h1>Verified container</h1>
+						<script>
+							setTimeout(() => {
+								const link = document.createElement('a');
+								link.setAttribute('onclick', 'openLink("verified-link")');
+								link.textContent = 'Continue';
+								document.body.append(link);
+							}, 500);
+						</script>
+					</body>`,
+					{
+						headers: {
+							"content-type": "text/html",
+							"set-cookie": "PHPSESSID=verified-browser; Path=/",
+						},
+					},
+				);
 			case "/host/1": {
 				// Real-world pattern: the download button opens an ad tab AND the
 				// actual download popup in the same click gesture. Also sets a
@@ -76,8 +99,22 @@ Bun.serve({
 });
 console.log(`[e2e] mock hoster on ${HOSTER}`);
 
+const unlocked = await unlockFileCryptContainer(FILECRYPT, {
+	request: async (url, init) => {
+		if (url === FILECRYPT) {
+			return { body: `<div class="pow-captcha"></div>`, url };
+		}
+		const cookie = new Headers(init?.headers).get("cookie") ?? "";
+		if (!cookie.includes("PHPSESSID=verified-browser")) {
+			throw new Error("FileCrypt verification cookie was not forwarded");
+		}
+		return { body: "", url: `${HOSTER}/host/1` };
+	},
+	renderContainer: renderFileCryptContainer,
+});
+
 const links = [
-	{ name: "game.part1.rar", url: `${HOSTER}/host/1` },
+	{ name: "game.part1.rar", url: unlocked[0]?.url ?? "" },
 	{ name: "game.part2.rar", url: `${HOSTER}/host/2` },
 ];
 
