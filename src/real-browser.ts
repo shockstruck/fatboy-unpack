@@ -19,6 +19,11 @@ export async function connectRealBrowser(): Promise<RealBrowserConnection> {
 		args: ["--no-sandbox", "--disable-setuid-sandbox"],
 		customConfig: { chromePath: puppeteer.executablePath() },
 		connectOption: { defaultViewport: null },
+		// On Linux the library spins up its own Xvfb and points Chrome at that
+		// invisible virtual display whenever the xvfb package is available —
+		// the user could never see or click the window. Our windows are
+		// user-facing by definition, so always render on the real DISPLAY.
+		disableXvfb: true,
 	});
 	connection.browser.removeAllListeners("targetcreated");
 	return connection;

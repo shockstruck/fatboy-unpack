@@ -117,9 +117,11 @@ async function renderFileCryptContainerNow(url: string): Promise<string> {
 		browser = connection.browser;
 		await connection.page.goto(url, { waitUntil: "domcontentloaded" });
 		await connection.page.waitForSelector("body");
+		// This window is user-facing: captcha-gated containers need the user to
+		// solve a recaptcha here, so give them a few minutes, not seconds.
 		await connection.page
 			.waitForSelector('.dlcdownload, [onclick^="openLink"]', {
-				timeout: 45000,
+				timeout: 180_000,
 			})
 			.catch(() => null);
 		return await connection.page.content();
