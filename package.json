@@ -12,6 +12,7 @@
 		"tldts-experimental": "^5.7.112"
 	},
 	"devDependencies": {
+		"@types/bun": "^1.4.0",
 		"@types/jsdom": "^21.1.7",
 		"@types/node": "^22.15.31"
 	}
