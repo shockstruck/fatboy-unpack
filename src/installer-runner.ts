@@ -179,6 +179,40 @@ export function removeFitgirlHostsEntries(options: {
 }
 
 /**
+ * Companion tools the ElAmigos/FitGirl updaters launch from postinstall [Run]
+ * entries that open a GUI and wait for a human (RapidCRC's verification
+ * window). Their batch.bat sibling does real patching (hpatchz) and must be
+ * left alone; only these viewers are safe to dismiss.
+ */
+const BLOCKING_COMPANIONS = /rapidcrc/i;
+
+/**
+ * Kills interactive companion windows of winePrefix so /VERYSILENT updater
+ * runs cannot hang on "click Exit". Returns how many were dismissed.
+ * Linux-only: reads /proc, like listWinePrefixPids.
+ */
+export function dismissBlockingCompanions(winePrefix: string): number {
+	let dismissed = 0;
+	for (const pid of listWinePrefixPids(winePrefix)) {
+		let cmdline: string;
+		try {
+			cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+		} catch {
+			continue;
+		}
+		if (BLOCKING_COMPANIONS.test(cmdline)) {
+			try {
+				process.kill(pid, "SIGKILL");
+				dismissed += 1;
+			} catch {
+				// Already gone.
+			}
+		}
+	}
+	return dismissed;
+}
+
+/**
  * PIDs of live processes whose environment references winePrefix. FitGirl's
  * "launch the game" finish step is a nowait postinstall [Run] entry that also
  * fires under /VERYSILENT, so the game (plus wineserver/services.exe) can

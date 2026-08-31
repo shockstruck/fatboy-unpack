@@ -4,6 +4,7 @@ import type { LibraryInfo } from "ogi-addon";
 import {
 	buildInstallerLaunchPlan,
 	convertUmuIdToGameId,
+	dismissBlockingCompanions,
 	runInstaller,
 	type UmuContext,
 } from "./installer-runner";
@@ -104,22 +105,34 @@ export async function applyLocalUpdatePackages(options: {
 						});
 						return 0;
 					}
+					const umu =
+						context.platform === "win32"
+							? undefined
+							: buildUmuContext(currentLibraryInfo, context);
 					const plan = buildInstallerLaunchPlan(
 						{
 							installerExe: staged.installerExe,
 							installDir: targetDir,
 							logFile: join(staged.stagingDir, "installer.log"),
 						},
-						{
-							platform: context.platform,
-							umu:
-								context.platform === "win32"
-									? undefined
-									: buildUmuContext(currentLibraryInfo, context),
-						},
+						{ platform: context.platform, umu },
 					);
-					const result = await runInstaller(plan, (line) => log(line.trim()));
-					return result.exitCode;
+					// The updaters end by launching RapidCRC's verification GUI and
+					// waiting on it; dismiss it whenever it appears so a silent
+					// update can never hang on a window nobody is watching.
+					const dismisser = umu
+						? setInterval(() => {
+								if (dismissBlockingCompanions(umu.winePrefix) > 0) {
+									log("Dismissed the updater's verification window.");
+								}
+							}, 3_000)
+						: undefined;
+					try {
+						const result = await runInstaller(plan, (line) => log(line.trim()));
+						return result.exitCode;
+					} finally {
+						if (dismisser) clearInterval(dismisser);
+					}
 				},
 			});
 		}
