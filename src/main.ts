@@ -717,13 +717,14 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 			record?.pendingUpdateVersion ??
 			"unknown";
 
-		const installDir = installDirOf(currentLibraryInfo);
+		const installDir = record?.installDir ?? installDirOf(currentLibraryInfo);
 		try {
 			// Clean up any interrupted previous attempt before starting a new one.
 			recoverUpdateTransaction(installDir, (message) => event.log(message));
 
 			const { backupDir } = await applyLocalUpdatePackages({
 				packages,
+				installDir,
 				downloadArtifacts,
 				targetVersion,
 				currentLibraryInfo,

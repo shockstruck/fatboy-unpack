@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import type { LibraryInfo } from "ogi-addon";
 import {
 	buildInstallerLaunchPlan,
@@ -50,6 +50,8 @@ export function installDirOf(libraryInfo: UpdateLibraryInfo): string {
 export async function applyLocalUpdatePackages(options: {
 	/** Package files (.rar or updater .exe) in prerequisite order. */
 	packages: string[];
+	/** Game installation root; defaults to cwd during initial installation. */
+	installDir?: string;
 	/** Downloaded files OGI placed in the live directory for this update. */
 	downloadArtifacts?: string[];
 	targetVersion: string;
@@ -59,13 +61,14 @@ export async function applyLocalUpdatePackages(options: {
 }): Promise<{ backupDir: string }> {
 	const {
 		packages,
+		installDir: suppliedInstallDir,
 		downloadArtifacts = [],
 		targetVersion,
 		currentLibraryInfo,
 		context,
 		log,
 	} = options;
-	const installDir = installDirOf(currentLibraryInfo);
+	const installDir = suppliedInstallDir ?? installDirOf(currentLibraryInfo);
 	if (!fs.existsSync(installDir)) {
 		throw new Error(`Installation directory does not exist: ${installDir}`);
 	}
@@ -89,6 +92,14 @@ export async function applyLocalUpdatePackages(options: {
 			steps.push({
 				label: label === "unknown" ? `package ${index + 1}` : label,
 				run: async (targetDir) => {
+					if (staged.kind === "overlay") {
+						log(`Copying update files from ${basename(packagePath)}...`);
+						fs.cpSync(staged.payloadDir, targetDir, {
+							recursive: true,
+							force: true,
+						});
+						return 0;
+					}
 					const plan = buildInstallerLaunchPlan(
 						{
 							installerExe: staged.installerExe,
@@ -117,11 +128,18 @@ export async function applyLocalUpdatePackages(options: {
 			fs.rmSync(artifact, { force: true });
 		}
 
+		const absoluteLaunchExecutable = isAbsolute(
+			currentLibraryInfo.launchExecutable,
+		)
+			? currentLibraryInfo.launchExecutable
+			: join(currentLibraryInfo.cwd, currentLibraryInfo.launchExecutable);
+		const launchExecutable = relative(installDir, absoluteLaunchExecutable);
 		return await applyUpdateTransaction({
 			installDir,
-			launchExecutable: isAbsolute(currentLibraryInfo.launchExecutable)
-				? basename(currentLibraryInfo.launchExecutable)
-				: currentLibraryInfo.launchExecutable,
+			launchExecutable:
+				launchExecutable.startsWith("..") || isAbsolute(launchExecutable)
+					? basename(currentLibraryInfo.launchExecutable)
+					: launchExecutable,
 			targetVersion,
 			steps,
 			log,

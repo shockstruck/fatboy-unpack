@@ -3,10 +3,11 @@ import fs from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 
 // Stages update packages before anything touches the installation. Every
-// package gets its own directory because ElAmigos companion payloads reuse the
-// same file name (elamigos-1.bin) across updates.
+// package gets its own directory so installer companions and loose-file
+// overlays from different update steps cannot collide.
 
-export type StagedUpdate = {
+export type StagedInstallerUpdate = {
+	kind: "installer";
 	/** Isolated directory holding this update's extracted files. */
 	stagingDir: string;
 	/** The outer installer to invoke. Internal batch/patch tools are never run directly. */
@@ -14,6 +15,15 @@ export type StagedUpdate = {
 	/** Companion payloads that must stay siblings of the installer. */
 	companionFiles: string[];
 };
+
+export type StagedOverlayUpdate = {
+	kind: "overlay";
+	/** Isolated directory whose tree is copied over the shadow installation. */
+	stagingDir: string;
+	payloadDir: string;
+};
+
+export type StagedUpdate = StagedInstallerUpdate | StagedOverlayUpdate;
 
 function runTool(command: string, args: string[]): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
@@ -72,7 +82,17 @@ async function listArchiveEntries(archivePath: string): Promise<string[]> {
 	return output.split(/\r?\n/).filter((line) => line.trim().length > 0);
 }
 
-function findStagedInstaller(stagingDir: string): StagedUpdate {
+function looksLikeInstaller(file: string): boolean {
+	const name = basename(file, ".exe");
+	return /(?:^|[._ -])(setup|install(?:er)?|update(?:r)?|patch)(?:$|[._ -])/i.test(
+		name,
+	);
+}
+
+function classifyStagedUpdate(
+	stagingDir: string,
+	forcedInstaller?: string,
+): StagedUpdate {
 	const files: string[] = [];
 	const walk = (dir: string): void => {
 		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -86,22 +106,31 @@ function findStagedInstaller(stagingDir: string): StagedUpdate {
 	};
 	walk(stagingDir);
 
-	const exes = files.filter((file) => file.toLowerCase().endsWith(".exe"));
-	if (exes.length === 0) {
-		throw new Error("No installer .exe found in the update package");
-	}
-	if (exes.length > 1) {
+	const installerCandidates = forcedInstaller
+		? files.filter((file) => basename(file) === forcedInstaller)
+		: files.filter(
+				(file) =>
+					file.toLowerCase().endsWith(".exe") && looksLikeInstaller(file),
+			);
+	if (installerCandidates.length > 1) {
 		throw new Error(
-			`Expected one installer .exe in the update package, found: ${exes
+			`Expected one installer .exe in the update package, found: ${installerCandidates
 				.map((exe) => basename(exe))
 				.join(", ")}`,
 		);
 	}
+	if (installerCandidates.length === 0) {
+		if (forcedInstaller) {
+			throw new Error(`Failed to stage updater executable: ${forcedInstaller}`);
+		}
+		return { kind: "overlay", stagingDir, payloadDir: stagingDir };
+	}
 
 	return {
+		kind: "installer",
 		stagingDir,
-		installerExe: exes[0],
-		companionFiles: files.filter((file) => file !== exes[0]),
+		installerExe: installerCandidates[0],
+		companionFiles: files.filter((file) => file !== installerCandidates[0]),
 	};
 }
 
@@ -120,6 +149,7 @@ export async function stageUpdatePackage(
 	fs.mkdirSync(stagingDir, { recursive: true });
 
 	const stat = fs.statSync(packagePath);
+	let forcedInstaller: string | undefined;
 	if (stat.isDirectory()) {
 		fs.cpSync(packagePath, stagingDir, { recursive: true });
 	} else if (/\.(rar|zip|7z)$/i.test(packagePath)) {
@@ -132,10 +162,21 @@ export async function stageUpdatePackage(
 				? [...tool.extract, `-o${stagingDir}`, packagePath]
 				: [...tool.extract, packagePath, `${stagingDir}/`];
 		await runTool(tool.command, args);
+	} else if (/\.exe$/i.test(packagePath)) {
+		// A bare installer may depend on sibling .bin payloads.
+		forcedInstaller = basename(packagePath);
+		fs.copyFileSync(packagePath, join(stagingDir, forcedInstaller));
+		for (const sibling of fs.readdirSync(dirname(packagePath))) {
+			if (/\.bin$/i.test(sibling)) {
+				fs.copyFileSync(
+					join(dirname(packagePath), sibling),
+					join(stagingDir, sibling),
+				);
+			}
+		}
 	} else {
-		// A bare installer exe: copy it plus any sibling companion payloads.
-		fs.cpSync(dirname(packagePath), stagingDir, { recursive: true });
+		throw new Error(`Unsupported update package: ${basename(packagePath)}`);
 	}
 
-	return findStagedInstaller(stagingDir);
+	return classifyStagedUpdate(stagingDir, forcedInstaller);
 }
