@@ -24,8 +24,14 @@ type Journal = {
 export type UpdateStep = {
 	/** Label used in logs and validation errors, e.g. "v1.05". */
 	label: string;
-	/** Applies this step against `targetDir`. Resolves its exit code. */
-	run: (targetDir: string) => Promise<number>;
+	/**
+	 * Applies this step against `targetDir`. Resolves its exit code. May report
+	 * its own progress as a 0..1 fraction of the step through `onStepProgress`.
+	 */
+	run: (
+		targetDir: string,
+		onStepProgress?: (fraction: number) => void,
+	) => Promise<number>;
 };
 
 export type UpdateTransactionOptions = {
@@ -261,13 +267,30 @@ export async function applyUpdateTransaction(
 			"A previous update backup still exists. Launch the game once to confirm the last update, then retry.",
 		);
 	}
+	// Progress within [base, base+span] for one step, from its 0..1 fraction.
+	const stepProgress = (
+		base: number,
+		span: number,
+		index: number,
+		count: number,
+	): ((fraction: number) => void) | undefined =>
+		setProgress
+			? (fraction) =>
+					setProgress(
+						base + ((index + Math.min(Math.max(fraction, 0), 1)) / count) * span,
+					)
+			: undefined;
+
 	if (!createBackup) {
 		log("Backup disabled; applying update directly to the installation...");
 		setProgress?.(0);
 		for (const [index, step] of steps.entries()) {
 			setProgress?.((index / Math.max(steps.length, 1)) * 90);
 			log(`Applying update ${step.label}...`);
-			const exitCode = await step.run(installDir);
+			const exitCode = await step.run(
+				installDir,
+				stepProgress(0, 90, index, steps.length),
+			);
 			if (exitCode !== 0) {
 				throw new Error(
 					`Update ${step.label} installer exited with code ${exitCode}`,
@@ -294,7 +317,10 @@ export async function applyUpdateTransaction(
 		for (const [index, step] of steps.entries()) {
 			setProgress?.(80 + (index / Math.max(steps.length, 1)) * 15);
 			log(`Applying update ${step.label}...`);
-			const exitCode = await step.run(shadowDir);
+			const exitCode = await step.run(
+				shadowDir,
+				stepProgress(80, 15, index, steps.length),
+			);
 			if (exitCode !== 0) {
 				throw new Error(
 					`Update ${step.label} installer exited with code ${exitCode}`,

@@ -9,6 +9,11 @@ import {
 	type UmuContext,
 } from "./installer-runner";
 import { extractRepackVersion } from "./repack-store";
+import {
+	describeUpdaterActivity,
+	trackUpdaterActivity,
+	updaterStepFraction,
+} from "./update-progress";
 import { stageUpdatePackage } from "./update-staging";
 import { applyUpdateTransaction, type UpdateStep } from "./update-transaction";
 
@@ -94,9 +99,10 @@ export async function applyLocalUpdatePackages(options: {
 			);
 			const staged = await stageUpdatePackage(packagePath, stagingRoot, index);
 			const label = extractRepackVersion(basename(packagePath));
+			const stepLabel = label === "unknown" ? `package ${index + 1}` : label;
 			steps.push({
-				label: label === "unknown" ? `package ${index + 1}` : label,
-				run: async (targetDir) => {
+				label: stepLabel,
+				run: async (targetDir, onStepProgress) => {
 					if (staged.kind === "overlay") {
 						log(`Copying update files from ${basename(packagePath)}...`);
 						fs.cpSync(staged.payloadDir, targetDir, {
@@ -109,13 +115,25 @@ export async function applyLocalUpdatePackages(options: {
 						context.platform === "win32"
 							? undefined
 							: buildUmuContext(currentLibraryInfo, context);
+					const logFile = join(staged.stagingDir, "installer.log");
 					const plan = buildInstallerLaunchPlan(
 						{
 							installerExe: staged.installerExe,
 							installDir: targetDir,
-							logFile: join(staged.stagingDir, "installer.log"),
+							logFile,
 						},
 						{ platform: context.platform, umu },
+					);
+					// A silent updater is otherwise a black box for minutes; surface
+					// its phase and written bytes from the Inno log and directory
+					// growth so the user sees a live bar and activity lines.
+					const stopTracking = trackUpdaterActivity(
+						logFile,
+						targetDir,
+						(activity) => {
+							log(describeUpdaterActivity(stepLabel, activity));
+							onStepProgress?.(updaterStepFraction(activity));
+						},
 					);
 					// The updaters end by launching RapidCRC's verification GUI and
 					// waiting on it; dismiss it whenever it appears so a silent
@@ -131,6 +149,7 @@ export async function applyLocalUpdatePackages(options: {
 						const result = await runInstaller(plan, (line) => log(line.trim()));
 						return result.exitCode;
 					} finally {
+						stopTracking();
 						if (dismisser) clearInterval(dismisser);
 					}
 				},
