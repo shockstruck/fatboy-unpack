@@ -12,8 +12,8 @@ import { stageUpdatePackage } from "./update-staging";
 import { applyUpdateTransaction, type UpdateStep } from "./update-transaction";
 
 // Orchestrates one local-package update: stage everything first, then apply
-// the chain to a shadow copy through UpdateTransaction. Callers only supply
-// the package files and the library entry being updated.
+// the chain through UpdateTransaction with optional rollback protection.
+// Callers only supply the package files and the library entry being updated.
 
 export type UpdateExecutionContext = {
 	platform: NodeJS.Platform;
@@ -59,7 +59,8 @@ export async function applyLocalUpdatePackages(options: {
 	context: UpdateExecutionContext;
 	log: (message: string) => void;
 	setProgress?: (progress: number) => void;
-}): Promise<{ backupDir: string }> {
+	createBackup?: boolean;
+}): Promise<{ backupDir?: string }> {
 	const {
 		packages,
 		installDir: suppliedInstallDir,
@@ -69,6 +70,7 @@ export async function applyLocalUpdatePackages(options: {
 		context,
 		log,
 		setProgress,
+		createBackup,
 	} = options;
 	const installDir = suppliedInstallDir ?? installDirOf(currentLibraryInfo);
 	if (!fs.existsSync(installDir)) {
@@ -146,6 +148,7 @@ export async function applyLocalUpdatePackages(options: {
 			steps,
 			log,
 			setProgress,
+			createBackup,
 		});
 	} finally {
 		fs.rmSync(stagingRoot, { recursive: true, force: true });

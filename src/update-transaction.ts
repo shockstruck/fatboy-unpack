@@ -3,10 +3,9 @@ import fs from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 
-// Applies an update chain to a shadow copy of the installation, never the live
-// game. The journal beside the install dir makes restart/power-loss recovery
-// idempotent, and commit is two same-filesystem renames with the previous
-// installation retained until the updated game launches successfully.
+// Applies an update chain to a rollback-capable shadow copy by default, or to
+// the live installation when the user explicitly disables backups. The journal
+// makes the safe mode restart/power-loss recovery idempotent.
 
 export type UpdateTransactionPhase =
 	| "shadowing"
@@ -25,7 +24,7 @@ type Journal = {
 export type UpdateStep = {
 	/** Label used in logs and validation errors, e.g. "v1.05". */
 	label: string;
-	/** Runs this step's installer against `targetDir`. Resolves the installer exit code. */
+	/** Applies this step against `targetDir`. Resolves its exit code. */
 	run: (targetDir: string) => Promise<number>;
 };
 
@@ -37,6 +36,8 @@ export type UpdateTransactionOptions = {
 	steps: UpdateStep[];
 	log: (message: string) => void;
 	setProgress?: (progress: number) => void;
+	/** Disable to patch installDir directly without rollback protection. */
+	createBackup?: boolean;
 };
 
 export function shadowDirFor(installDir: string): string {
@@ -195,11 +196,11 @@ async function createShadowCopy(
 	);
 }
 
-function validateShadow(shadowDir: string, launchExecutable: string): void {
-	const executablePath = join(shadowDir, basename(launchExecutable));
+function validateInstallation(installDir: string, launchExecutable: string): void {
+	const executablePath = join(installDir, basename(launchExecutable));
 	const executableSurvived =
 		fs.existsSync(executablePath) ||
-		fs.existsSync(join(shadowDir, launchExecutable));
+		fs.existsSync(join(installDir, launchExecutable));
 	if (!executableSurvived) {
 		throw new Error(
 			`Validation failed: game executable ${basename(launchExecutable)} is missing after patching`,
@@ -217,7 +218,7 @@ function validateShadow(shadowDir: string, launchExecutable: string): void {
 			}
 		}
 	};
-	scan(shadowDir);
+	scan(installDir);
 	if (leftovers.length > 0) {
 		throw new Error(
 			`Validation failed: patching left temporary files behind (${leftovers
@@ -229,13 +230,13 @@ function validateShadow(shadowDir: string, launchExecutable: string): void {
 }
 
 /**
- * Applies every step to a shadow copy, validates, and commits with renames.
- * On any failure before commit the live installation is untouched. Returns the
- * backup directory retained for rollback until the next successful launch.
+ * Applies every step, validates, and returns the optional rollback backup.
+ * Safe mode patches a shadow and commits with renames; direct mode modifies
+ * the live installation and cannot roll back a partially applied update.
  */
 export async function applyUpdateTransaction(
 	options: UpdateTransactionOptions,
-): Promise<{ backupDir: string }> {
+): Promise<{ backupDir?: string }> {
 	const {
 		installDir,
 		launchExecutable,
@@ -243,6 +244,7 @@ export async function applyUpdateTransaction(
 		steps,
 		log,
 		setProgress,
+		createBackup = true,
 	} = options;
 	const shadowDir = shadowDirFor(installDir);
 	const backupDir = backupDirFor(installDir);
@@ -258,6 +260,26 @@ export async function applyUpdateTransaction(
 		throw new Error(
 			"A previous update backup still exists. Launch the game once to confirm the last update, then retry.",
 		);
+	}
+	if (!createBackup) {
+		log("Backup disabled; applying update directly to the installation...");
+		setProgress?.(0);
+		for (const [index, step] of steps.entries()) {
+			setProgress?.((index / Math.max(steps.length, 1)) * 90);
+			log(`Applying update ${step.label}...`);
+			const exitCode = await step.run(installDir);
+			if (exitCode !== 0) {
+				throw new Error(
+					`Update ${step.label} installer exited with code ${exitCode}`,
+				);
+			}
+			setProgress?.(((index + 1) / steps.length) * 90);
+		}
+		setProgress?.(95);
+		log("Validating updated installation...");
+		validateInstallation(installDir, launchExecutable);
+		setProgress?.(100);
+		return {};
 	}
 
 	writeJournal(journal);
@@ -283,7 +305,7 @@ export async function applyUpdateTransaction(
 
 		setProgress?.(97);
 		log("Validating patched installation...");
-		validateShadow(shadowDir, launchExecutable);
+		validateInstallation(shadowDir, launchExecutable);
 	} catch (error) {
 		fs.rmSync(shadowDir, { recursive: true, force: true });
 		clearJournal(installDir);

@@ -141,6 +141,15 @@ addon.on("configure", (config) =>
 				)
 				.setDefaultValue(true),
 		)
+		.addBooleanOption((option) =>
+			option
+				.setName("backupBeforeUpdates")
+				.setDisplayName("Back Up Before Updating")
+				.setDescription(
+					"Create a rollback copy before applying updates. Disable to update the installed game directly.",
+				)
+				.setDefaultValue(true),
+		)
 		.addActionOption((option) =>
 			option
 				.setName("re-run-scrapes")
@@ -150,6 +159,15 @@ addon.on("configure", (config) =>
 				.setTaskName("re-run-scrapes"),
 		),
 );
+
+function backupBeforeUpdates(): boolean {
+	try {
+		return addon.config.getBooleanValue("backupBeforeUpdates");
+	} catch {
+		// Existing configs may not contain newly added options until OGI saves them.
+		return true;
+	}
+}
 
 addon.on("search", (data, event) => {
 	const { appID, storefront, for: searchType } = data;
@@ -718,6 +736,7 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 			"unknown";
 
 		const installDir = record?.installDir ?? installDirOf(currentLibraryInfo);
+		const createBackup = backupBeforeUpdates();
 		try {
 			// Clean up any interrupted previous attempt before starting a new one.
 			recoverUpdateTransaction(installDir, (message) => event.log(message));
@@ -737,6 +756,7 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 				setProgress: (progress) => {
 					event.progress = progress;
 				},
+				createBackup,
 			});
 
 			if (record) {
@@ -752,7 +772,9 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 			}
 		} catch (err) {
 			event.fail(
-				`Update failed and the installation was left untouched: ${err instanceof Error ? err.message : String(err)}`,
+				createBackup
+					? `Update failed and the installation was left untouched: ${err instanceof Error ? err.message : String(err)}`
+					: `Update failed while applying directly to the installation; some files may already be changed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return;
 		}
@@ -1547,6 +1569,7 @@ addon.on("setup", (data, event) => {
 			);
 			const targetVersion =
 				setupManifest?.installUpdateTargetVersion ?? baseVersion;
+			const createBackup = backupBeforeUpdates();
 			try {
 				event.log(
 					`Applying ${packages.length} FitGirl update package(s) before finishing installation...`,
@@ -1575,6 +1598,7 @@ addon.on("setup", (data, event) => {
 					setProgress: (progress) => {
 						event.progress = progress;
 					},
+					createBackup,
 				});
 				version = targetVersion;
 				pendingBackupDir = result.backupDir;
@@ -1585,7 +1609,9 @@ addon.on("setup", (data, event) => {
 				});
 			} catch (error) {
 				event.fail(
-					`The base game installed, but its automatic updates failed safely: ${error instanceof Error ? error.message : String(error)}`,
+					createBackup
+						? `The base game installed, but its automatic updates failed safely: ${error instanceof Error ? error.message : String(error)}`
+						: `The base game installed, but its direct automatic update failed and may have changed some game files: ${error instanceof Error ? error.message : String(error)}`,
 				);
 				return;
 			}

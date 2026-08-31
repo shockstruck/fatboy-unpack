@@ -49,6 +49,7 @@ describe("update transaction", () => {
 				},
 			],
 		});
+		if (!backupDir) throw new Error("Expected a rollback backup");
 
 		expect(patchedDirs).toEqual([shadowDirFor(installDir)]);
 		expect(fs.readFileSync(join(installDir, "game.exe"), "utf-8")).toBe(
@@ -65,6 +66,61 @@ describe("update transaction", () => {
 
 		discardUpdateBackup(installDir);
 		expect(fs.existsSync(backupDir)).toBe(false);
+	});
+
+	test("can apply directly without creating a shadow or backup", async () => {
+		const patchedDirs: string[] = [];
+		const result = await applyUpdateTransaction({
+			installDir,
+			launchExecutable: "game.exe",
+			targetVersion: "v1.05",
+			createBackup: false,
+			log: noLog,
+			steps: [
+				{
+					label: "v1.05",
+					run: async (targetDir) => {
+						patchedDirs.push(targetDir);
+						fs.writeFileSync(join(targetDir, "game.exe"), "v1.05");
+						return 0;
+					},
+				},
+			],
+		});
+
+		expect(patchedDirs).toEqual([installDir]);
+		expect(result.backupDir).toBeUndefined();
+		expect(fs.readFileSync(join(installDir, "game.exe"), "utf-8")).toBe(
+			"v1.05",
+		);
+		expect(fs.existsSync(shadowDirFor(installDir))).toBe(false);
+		expect(fs.existsSync(backupDirFor(installDir))).toBe(false);
+	});
+
+	test("leaves direct-update changes in place when a later step fails", async () => {
+		const transaction = applyUpdateTransaction({
+			installDir,
+			launchExecutable: "game.exe",
+			targetVersion: "v1.05",
+			createBackup: false,
+			log: noLog,
+			steps: [
+				{
+					label: "partial",
+					run: async (targetDir) => {
+						fs.writeFileSync(join(targetDir, "game.exe"), "partial");
+						return 0;
+					},
+				},
+				{ label: "failed", run: async () => 2 },
+			],
+		});
+
+		await expect(transaction).rejects.toThrow("exited with code 2");
+		expect(fs.readFileSync(join(installDir, "game.exe"), "utf-8")).toBe(
+			"partial",
+		);
+		expect(fs.existsSync(backupDirFor(installDir))).toBe(false);
 	});
 
 	test("leaves the live install untouched when an installer fails", async () => {
