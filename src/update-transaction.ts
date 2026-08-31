@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
 
 // Applies an update chain to a shadow copy of the installation, never the live
 // game. The journal beside the install dir makes restart/power-loss recovery
@@ -35,6 +36,7 @@ export type UpdateTransactionOptions = {
 	targetVersion: string;
 	steps: UpdateStep[];
 	log: (message: string) => void;
+	setProgress?: (progress: number) => void;
 };
 
 export function shadowDirFor(installDir: string): string {
@@ -94,8 +96,71 @@ function directorySize(dir: string): number {
  * CoW filesystems (btrfs/xfs) pay no space; a full copy checks free space
  * first and refuses rather than filling the disk.
  */
-function createShadowCopy(installDir: string, shadowDir: string): void {
+async function copyDirectoryWithProgress(
+	sourceDir: string,
+	targetDir: string,
+	totalBytes: number,
+	onProgress: (progress: number) => void,
+): Promise<void> {
+	let copiedBytes = 0;
+	let lastReported = -1;
+	let lastReportedAt = 0;
+	const report = (force = false): void => {
+		const progress = Math.min(
+			(copiedBytes / Math.max(totalBytes, 1)) * 100,
+			100,
+		);
+		const now = Date.now();
+		if (!force && progress < lastReported + 0.1 && now - lastReportedAt < 250) {
+			return;
+		}
+		lastReported = progress;
+		lastReportedAt = now;
+		onProgress(progress);
+	};
+
+	const copyEntry = async (source: string, target: string): Promise<void> => {
+		const stat = await fs.promises.lstat(source);
+		if (stat.isDirectory()) {
+			await fs.promises.mkdir(target, { recursive: true, mode: stat.mode });
+			for (const entry of await fs.promises.readdir(source)) {
+				await copyEntry(join(source, entry), join(target, entry));
+			}
+			await fs.promises.chmod(target, stat.mode);
+			await fs.promises.utimes(target, stat.atime, stat.mtime);
+			return;
+		}
+		if (stat.isSymbolicLink()) {
+			await fs.promises.symlink(await fs.promises.readlink(source), target);
+			return;
+		}
+		if (!stat.isFile()) return;
+
+		const read = fs.createReadStream(source, {
+			highWaterMark: 4 * 1024 * 1024,
+		});
+		const write = fs.createWriteStream(target, { mode: stat.mode });
+		read.on("data", (chunk: Buffer) => {
+			copiedBytes += chunk.length;
+			report();
+		});
+		await pipeline(read, write);
+		await fs.promises.chmod(target, stat.mode);
+		await fs.promises.utimes(target, stat.atime, stat.mtime);
+	};
+
+	await copyEntry(sourceDir, targetDir);
+	copiedBytes = totalBytes;
+	report(true);
+}
+
+async function createShadowCopy(
+	installDir: string,
+	shadowDir: string,
+	onProgress: (progress: number) => void,
+): Promise<void> {
 	fs.rmSync(shadowDir, { recursive: true, force: true });
+	onProgress(0);
 
 	if (process.platform !== "win32") {
 		const reflink = spawnSync(
@@ -104,6 +169,7 @@ function createShadowCopy(installDir: string, shadowDir: string): void {
 			{ stdio: "ignore" },
 		);
 		if (reflink.status === 0) {
+			onProgress(100);
 			return;
 		}
 		fs.rmSync(shadowDir, { recursive: true, force: true });
@@ -121,7 +187,12 @@ function createShadowCopy(installDir: string, shadowDir: string): void {
 				"Refusing to patch the live installation.",
 		);
 	}
-	fs.cpSync(installDir, shadowDir, { recursive: true });
+	await copyDirectoryWithProgress(
+		installDir,
+		shadowDir,
+		needed,
+		onProgress,
+	);
 }
 
 function validateShadow(shadowDir: string, launchExecutable: string): void {
@@ -165,7 +236,14 @@ function validateShadow(shadowDir: string, launchExecutable: string): void {
 export async function applyUpdateTransaction(
 	options: UpdateTransactionOptions,
 ): Promise<{ backupDir: string }> {
-	const { installDir, launchExecutable, targetVersion, steps, log } = options;
+	const {
+		installDir,
+		launchExecutable,
+		targetVersion,
+		steps,
+		log,
+		setProgress,
+	} = options;
 	const shadowDir = shadowDirFor(installDir);
 	const backupDir = backupDirFor(installDir);
 	const journal: Journal = {
@@ -184,12 +262,15 @@ export async function applyUpdateTransaction(
 
 	writeJournal(journal);
 	log("Creating shadow copy of the installation...");
-	createShadowCopy(installDir, shadowDir);
+	await createShadowCopy(installDir, shadowDir, (progress) =>
+		setProgress?.(progress * 0.8),
+	);
 
 	try {
 		journal.phase = "patching";
 		writeJournal(journal);
-		for (const step of steps) {
+		for (const [index, step] of steps.entries()) {
+			setProgress?.(80 + (index / Math.max(steps.length, 1)) * 15);
 			log(`Applying update ${step.label}...`);
 			const exitCode = await step.run(shadowDir);
 			if (exitCode !== 0) {
@@ -197,8 +278,10 @@ export async function applyUpdateTransaction(
 					`Update ${step.label} installer exited with code ${exitCode}`,
 				);
 			}
+			setProgress?.(80 + ((index + 1) / steps.length) * 15);
 		}
 
+		setProgress?.(97);
 		log("Validating patched installation...");
 		validateShadow(shadowDir, launchExecutable);
 	} catch (error) {
@@ -209,12 +292,14 @@ export async function applyUpdateTransaction(
 
 	journal.phase = "committing";
 	writeJournal(journal);
+	setProgress?.(99);
 	log("Committing update...");
 	fs.renameSync(installDir, backupDir);
 	fs.renameSync(shadowDir, installDir);
 	journal.phase = "committed";
 	writeJournal(journal);
 	clearJournal(installDir);
+	setProgress?.(100);
 
 	return { backupDir };
 }

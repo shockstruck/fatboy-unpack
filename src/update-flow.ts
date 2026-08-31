@@ -58,6 +58,7 @@ export async function applyLocalUpdatePackages(options: {
 	currentLibraryInfo: UpdateLibraryInfo;
 	context: UpdateExecutionContext;
 	log: (message: string) => void;
+	setProgress?: (progress: number) => void;
 }): Promise<{ backupDir: string }> {
 	const {
 		packages,
@@ -67,6 +68,7 @@ export async function applyLocalUpdatePackages(options: {
 		currentLibraryInfo,
 		context,
 		log,
+		setProgress,
 	} = options;
 	const installDir = suppliedInstallDir ?? installDirOf(currentLibraryInfo);
 	if (!fs.existsSync(installDir)) {
@@ -143,6 +145,7 @@ export async function applyLocalUpdatePackages(options: {
 			targetVersion,
 			steps,
 			log,
+			setProgress,
 		});
 	} finally {
 		fs.rmSync(stagingRoot, { recursive: true, force: true });

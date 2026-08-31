@@ -31,11 +31,13 @@ const noLog = (): void => {};
 describe("update transaction", () => {
 	test("patches the shadow, commits, and retains a backup", async () => {
 		const patchedDirs: string[] = [];
+		const progress: number[] = [];
 		const { backupDir } = await applyUpdateTransaction({
 			installDir,
 			launchExecutable: "game.exe",
 			targetVersion: "v1.05",
 			log: noLog,
+			setProgress: (value) => progress.push(value),
 			steps: [
 				{
 					label: "v1.05",
@@ -53,6 +55,13 @@ describe("update transaction", () => {
 			"v1.05",
 		);
 		expect(fs.readFileSync(join(backupDir, "game.exe"), "utf-8")).toBe("v1.00");
+		expect(progress[0]).toBe(0);
+		expect(progress.at(-1)).toBe(100);
+		expect(
+			progress.every(
+				(value, index) => index === 0 || value >= progress[index - 1],
+			),
+		).toBe(true);
 
 		discardUpdateBackup(installDir);
 		expect(fs.existsSync(backupDir)).toBe(false);

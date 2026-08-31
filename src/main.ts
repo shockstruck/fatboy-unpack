@@ -734,6 +734,9 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 					homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
 				},
 				log: (message) => event.log(message),
+				setProgress: (progress) => {
+					event.progress = progress;
+				},
 			});
 
 			if (record) {
@@ -1569,6 +1572,9 @@ addon.on("setup", (data, event) => {
 						homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
 					},
 					log: (message) => event.log(message),
+					setProgress: (progress) => {
+						event.progress = progress;
+					},
 				});
 				version = targetVersion;
 				pendingBackupDir = result.backupDir;
