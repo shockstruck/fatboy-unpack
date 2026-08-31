@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import axios from "axios";
 import { JSDOM } from "jsdom";
 import OGIAddon, {
+	type AddonDownload,
 	ConfigurationBuilder,
 	type EventListenerTypes,
 	SearchTool,
@@ -115,6 +116,9 @@ const addon = new OGIAddon({
 
 let scrapedGames: Game[] | undefined;
 const pendingUpdateVersions = new Map<number, string>();
+// Update-package downloads queued at request time (magnet flow) that setup
+// must wait on before applying the chain. Keyed by appID.
+const pendingUpdateDownloads = new Map<number, AddonDownload>();
 const makeSearch = () => {
 	return new SearchTool<Game>([], ["name"], {
 		threshold: 0.1,
@@ -336,16 +340,20 @@ addon.on("search", (data, event) => {
 			});
 		}
 
-		// magnet link - 1337x
+		// magnet link - 1337x. Resolved through request-dl so the update
+		// packages can be queued alongside the torrent instead of after it.
 		if (gameMetaData.magnetLink) {
 			results.push({
 				name: `1337x | ${gameMetaData.name}`,
-				downloadType: "magnet",
-				downloadURL: gameMetaData.magnetLink,
-				filename: generateHash(game.name),
+				downloadType: "request",
 				manifest: {
+					service: "magnet",
+					magnetLink: gameMetaData.magnetLink,
+					magnetFilename: generateHash(game.name),
+					storefront,
 					fitgirlUrl: fitGame.url,
 					fitgirlRelease: fitGame.name,
+					fitgirlGameName: game.name,
 					originalSizeBytes: gameMetaData.originalSizeBytes,
 					hddSpaceAfterInstallBytes: gameMetaData.hddSpaceAfterInstallBytes,
 				},
@@ -518,6 +526,12 @@ type SetupManifest = {
 	pathOfSetupExe?: string;
 	installUpdateGroups?: DownloadedUpdateGroup[];
 	installUpdateTargetVersion?: string;
+	/**
+	 * Download-directory-relative folder the update packages were queued into
+	 * (magnet flow, where they cannot ride along in the torrent itself).
+	 * Update files live in `dirname(path)/<folder>` instead of `path`.
+	 */
+	installUpdatesFolder?: string;
 	// Scraped from the repack page at search time; null when the page omits
 	// the figure. Used as the install-progress denominator.
 	originalSizeBytes?: number | null;
@@ -1605,14 +1619,25 @@ addon.on("setup", (data, event) => {
 			appliedAt: string;
 		}[] = [];
 		if (installUpdateGroups.length > 0) {
-			const packages = resolveDownloadedUpdatePackages(
-				path,
-				installUpdateGroups,
-			);
+			// Torrent-flow updates download into a sibling folder of the torrent's
+			// own directory; direct-flow updates share `path` with the base files.
+			const updatesDir = setupManifest?.installUpdatesFolder
+				? join(dirname(path), setupManifest.installUpdatesFolder)
+				: path;
 			const targetVersion =
 				setupManifest?.installUpdateTargetVersion ?? baseVersion;
 			const createBackup = backupBeforeUpdates();
 			try {
+				const pendingDownload = pendingUpdateDownloads.get(appID);
+				if (pendingDownload) {
+					pendingUpdateDownloads.delete(appID);
+					event.log("Waiting for the update packages to finish downloading...");
+					await pendingDownload.wait();
+				}
+				const packages = resolveDownloadedUpdatePackages(
+					updatesDir,
+					installUpdateGroups,
+				);
 				event.log(
 					`Applying ${packages.length} FitGirl update package(s) before finishing installation...`,
 				);
@@ -1620,7 +1645,7 @@ addon.on("setup", (data, event) => {
 					packages,
 					downloadArtifacts: installUpdateGroups
 						.flatMap((group) => group.files)
-						.map((file) => join(path, file)),
+						.map((file) => join(updatesDir, file)),
 					targetVersion,
 					currentLibraryInfo: {
 						appID,
@@ -1649,6 +1674,9 @@ addon.on("setup", (data, event) => {
 					packages,
 					appliedAt: new Date().toISOString(),
 				});
+				if (updatesDir !== path) {
+					fs.rmSync(updatesDir, { recursive: true, force: true });
+				}
 			} catch (error) {
 				event.fail(
 					createBackup
@@ -2125,6 +2153,98 @@ addon.on("request-dl", (appID, info, event) => {
 				});
 			} catch (error) {
 				event.fail(error instanceof Error ? error.message : String(error));
+			}
+		} else if (info.manifest.service === "magnet") {
+			// The torrent carries only the base repack, so the update packages are
+			// queued as a parallel addon.download card while the magnet is handed
+			// to OGI — both downloads run together and setup applies the chain.
+			const gameName =
+				(info.manifest.fitgirlGameName as string | undefined) ?? info.name;
+			const magnetResult = {
+				name: `1337x | ${info.name}`,
+				downloadType: "magnet" as const,
+				downloadURL: info.manifest.magnetLink as string,
+				filename: info.manifest.magnetFilename as string,
+				manifest: { ...info.manifest },
+			};
+			try {
+				const updates = parseFitGirlUpdates(
+					(await axiosGetWithDDOSGuard(addon, FITGIRL_UPDATES_URL, {})).data,
+					gameName,
+				);
+				if (updates.length === 0) {
+					event.resolve(magnetResult);
+					return;
+				}
+				const targetVersion = inferUpdateTargetVersion(updates.at(-1)?.name);
+				const choice = (await event.askForInput(
+					"FitGirl Repacks",
+					`${updates.length} update package(s) are available for ${gameName}` +
+						(targetVersion !== "unknown" ? ` (latest: ${targetVersion})` : "") +
+						". Download them alongside the torrent so the game installs fully up to date?",
+					new ConfigurationBuilder().addBooleanOption((option) =>
+						option
+							.setName("queueUpdates")
+							.setDisplayName("Also Download Updates")
+							.setDescription(
+								"Queues every update package in the download manager next to the torrent and applies them during installation.",
+							)
+							.setDefaultValue(true),
+					),
+				)) as { queueUpdates: boolean };
+				if (!choice.queueUpdates) {
+					event.resolve(magnetResult);
+					return;
+				}
+
+				const resolved = await resolveAutomaticFitGirlUpdates(
+					gameName,
+					(message) => event.log(message),
+					(title, message, screen) =>
+						event.askForInput(title, message, screen),
+					updates,
+				);
+				if (resolved.files.length === 0) {
+					event.log("No usable update download links were found.");
+					event.resolve(magnetResult);
+					return;
+				}
+
+				// Relative paths resolve against OGI's download directory — the same
+				// base the torrent lands in, so setup finds them beside it.
+				const updatesFolder = `fatboy-updates-${appID}`;
+				const storefront =
+					(info.manifest.storefront as string | undefined) ?? "steam";
+				const download = await addon.download({
+					name: `FitGirl Updates | ${gameName}`,
+					appID,
+					capsuleImage:
+						(await addon.getAppDetails(appID, storefront))?.capsuleImage ?? "",
+					files: resolved.files.map((file) => ({
+						link: file.downloadURL,
+						path: `${updatesFolder}/${file.name}`,
+						headers: file.headers,
+					})),
+				});
+				pendingUpdateDownloads.set(appID, download);
+				event.log(
+					`Queued ${resolved.files.length} update file(s) next to the torrent.`,
+				);
+				event.resolve({
+					...magnetResult,
+					manifest: {
+						...info.manifest,
+						installUpdateGroups: resolved.groups,
+						installUpdateTargetVersion: resolved.targetVersion ?? targetVersion,
+						installUpdatesFolder: updatesFolder,
+					},
+				});
+			} catch (error) {
+				// The base torrent is still perfectly usable without the updates.
+				event.log(
+					`Could not queue FitGirl updates; continuing with the base torrent: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				event.resolve(magnetResult);
 			}
 		} else if (info.manifest.service === "filecrypt-update") {
 			const updates = info.manifest.updates as { name: string; url: string }[];
