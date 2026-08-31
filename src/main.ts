@@ -41,6 +41,7 @@ import {
 	parseFitGirlUpdates,
 	resolveDownloadedUpdatePackages,
 } from "./fitgirl-updates";
+import { findBinManifest, verifyRepackBins } from "./bin-verify";
 import { resolveServiceFromUrl } from "./matcher";
 import {
 	extractRepackVersion,
@@ -979,6 +980,15 @@ addon.on("setup", (data, event) => {
 						)
 						.setDefaultValue(defaultInstallDir)
 						.setInputType("folder"),
+				)
+				.addBooleanOption((option) =>
+					option
+						.setName("verifyBins")
+						.setDisplayName("Verify Downloaded Files First")
+						.setDescription(
+							"Check the repack's .bin files against its MD5 manifest before installing (replaces the repack's own QuickSFV step).",
+						)
+						.setDefaultValue(true),
 				);
 			for (const group of bins.optional) {
 				screen.addBooleanOption((option) =>
@@ -1031,6 +1041,38 @@ addon.on("setup", (data, event) => {
 			const excludedOptional = bins.optional.filter(
 				(group) => input[optionNameFor(group)] !== true,
 			);
+
+			// The repack's own "Verify BIN files" step opens QuickSFV's GUI and
+			// waits for a human; hash the same manifest natively instead so a
+			// corrupt download fails here, not 40 minutes into the installer.
+			if (input.verifyBins !== false) {
+				const manifestPath = findBinManifest(setupDir);
+				if (manifestPath) {
+					event.log("Verifying repack files against the MD5 manifest...");
+					const verification = await verifyRepackBins(
+						manifestPath,
+						(progress) => {
+							event.progress = progress;
+						},
+					);
+					if (verification.corrupt.length > 0) {
+						event.fail(
+							`Repack verification failed; re-download these files before installing: ${verification.corrupt.join(", ")}`,
+						);
+						return;
+					}
+					event.log(
+						`Verified ${verification.verified} repack file(s); all OK.` +
+							(verification.missing.length > 0
+								? ` Skipped ${verification.missing.length} not-downloaded optional file(s).`
+								: ""),
+					);
+				} else {
+					event.log(
+						"No MD5 manifest found in the repack; skipping verification.",
+					);
+				}
+			}
 
 			// The manual Wine flow installs into a staging folder first; the
 			// silent flow writes straight into the target.
