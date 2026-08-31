@@ -1657,6 +1657,40 @@ addon.on("setup", (data, event) => {
 				);
 				return;
 			}
+		} else {
+			// Nothing was bundled at download time — offer the guided update
+			// chain now so a fresh install can finish fully up to date.
+			try {
+				const applied = await offerAndApplySetupUpdates({
+					appID,
+					storefront,
+					gameName: (manifest?.fitgirlGameName as string | undefined) ?? name,
+					installDir,
+					launchExecutable: relative(
+						installDir,
+						gameExecutable.gameExecutable,
+					),
+					downloadDir: path,
+					event,
+				});
+				if (applied) {
+					version = applied.version;
+					pendingBackupDir = applied.backupDir;
+					appliedUpdates.push({
+						version: applied.version,
+						packages: applied.packages,
+						appliedAt: new Date().toISOString(),
+					});
+				}
+			} catch (error) {
+				// The base game is installed; finishing setup beats failing the
+				// whole install over an optional update.
+				event.log(
+					backupBeforeUpdates()
+						? `Updates could not be applied; the game stays at its base version: ${error instanceof Error ? error.message : String(error)}`
+						: `Updates failed while applying directly; some game files may already be changed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 		saveInstalledRepack({
 			appID,
@@ -1868,6 +1902,144 @@ async function resolveAutomaticFitGirlUpdates(
 				? inferUpdateTargetVersion(updates.at(-1)?.name)
 				: undefined,
 	};
+}
+
+/**
+ * Guided post-install update chain: asks whether to bring the fresh install to
+ * the latest FitGirl version, downloads the packages through OGI's own
+ * download queue (addon.download, visible as real download cards), and applies
+ * them with the usual transaction. Returns undefined when there is nothing to
+ * do or the user declined; throws only when packages were applied unsafely.
+ */
+async function offerAndApplySetupUpdates(options: {
+	appID: number;
+	storefront: string;
+	gameName: string;
+	installDir: string;
+	launchExecutable: string;
+	downloadDir: string;
+	event: SetupEvent;
+}): Promise<
+	| {
+			version: string;
+			packages: string[];
+			backupDir?: string;
+	  }
+	| undefined
+> {
+	const { appID, storefront, gameName, installDir, launchExecutable, downloadDir, event } =
+		options;
+
+	let updates: FitGirlUpdate[];
+	try {
+		updates = parseFitGirlUpdates(
+			(await axiosGetWithDDOSGuard(addon, FITGIRL_UPDATES_URL, {})).data,
+			gameName,
+		);
+	} catch (error) {
+		event.log(`Could not check the FitGirl updates list: ${error}`);
+		return undefined;
+	}
+	if (updates.length === 0) {
+		event.log("No FitGirl updates are listed for this game.");
+		return undefined;
+	}
+
+	const targetVersion = inferUpdateTargetVersion(updates.at(-1)?.name);
+	const choice = (await event.askForInput(
+		"FitGirl Repacks",
+		`${updates.length} update package(s) are available for ${gameName}` +
+			(targetVersion !== "unknown" ? ` (latest: ${targetVersion})` : "") +
+			". Install them now to finish with an up-to-date game?",
+		new ConfigurationBuilder().addBooleanOption((option) =>
+			option
+				.setName("installUpdates")
+				.setDisplayName("Download & Install Updates")
+				.setDescription(
+					"Downloads every update package through the OGI download queue and applies them in order. Disable to keep the base version.",
+				)
+				.setDefaultValue(true),
+		),
+	)) as { installUpdates: boolean };
+	if (!choice.installUpdates) {
+		event.log("Skipping updates; the base version stays installed.");
+		return undefined;
+	}
+
+	const resolved = await resolveAutomaticFitGirlUpdates(
+		gameName,
+		(message) => event.log(message),
+		(title, message, screen) => event.askForInput(title, message, screen),
+		updates,
+	);
+	if (resolved.files.length === 0) {
+		event.log("No usable update download links were found; skipping updates.");
+		return undefined;
+	}
+
+	// Absolute paths route the queue's output into our own staging area beside
+	// the base download instead of the global download directory.
+	const updatesDir = join(downloadDir, "fatboy-update-downloads");
+	fs.mkdirSync(updatesDir, { recursive: true });
+	event.log(
+		`Queueing ${resolved.files.length} update file(s) in the download manager...`,
+	);
+	const download = await addon.download({
+		name: `FitGirl Updates | ${gameName}`,
+		appID,
+		capsuleImage:
+			(await addon.getAppDetails(appID, storefront))?.capsuleImage ?? "",
+		files: resolved.files.map((file) => ({
+			link: file.downloadURL,
+			path: join(updatesDir, file.name),
+			headers: file.headers,
+		})),
+	});
+	// The queue reports progress as a 0..1 fraction; downloads own the first
+	// 40% of this setup phase, applying the packages owns the rest.
+	let lastLoggedPercent = -10;
+	download.on("progress", ({ progress, part, totalParts }) => {
+		const percent = Math.min(progress * 100, 100);
+		event.progress = percent * 0.4;
+		if (percent >= lastLoggedPercent + 10) {
+			lastLoggedPercent = percent;
+			const partSuffix =
+				part !== undefined && totalParts !== undefined
+					? ` (file ${part}/${totalParts})`
+					: "";
+			event.log(`Downloading updates: ${Math.floor(percent)}%${partSuffix}`);
+		}
+	});
+	await download.wait();
+	event.log("Update downloads finished.");
+
+	const packages = resolveDownloadedUpdatePackages(updatesDir, resolved.groups);
+	const result = await applyLocalUpdatePackages({
+		packages,
+		installDir,
+		downloadArtifacts: resolved.files.map((file) =>
+			join(updatesDir, file.name),
+		),
+		targetVersion,
+		currentLibraryInfo: {
+			appID,
+			cwd: installDir,
+			launchExecutable,
+			umu: { umuId: `steam:${appID}` },
+		},
+		context: {
+			platform: process.platform,
+			umuRunPath: UMU_BIN,
+			homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
+		},
+		log: (message) => event.log(message),
+		setProgress: (progress) => {
+			event.progress = 40 + progress * 0.6;
+		},
+		createBackup: backupBeforeUpdates(),
+	});
+	fs.rmSync(updatesDir, { recursive: true, force: true });
+	return { version: targetVersion, packages, backupDir: result.backupDir };
 }
 
 addon.on("request-dl", (appID, info, event) => {
