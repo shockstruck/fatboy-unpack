@@ -46,7 +46,7 @@
 
     "@csstools/css-tokenizer": ["@csstools/css-tokenizer@3.0.4", "", {}, "sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw=="],
 
-    "@ogi-sdk/connect": ["@ogi-sdk/connect@1.0.2", "", { "peerDependencies": { "typescript": "^5" } }, "sha512-h/N27OHEEdv+5wOTBBLKWMn7D1PZD3dpcdc8U/iyfWbgwWAEpcMNe4n6bkSb0/79ctVHbN2NZiF/b5f9g7cMmw=="],
+    "@ogi-sdk/connect": ["@ogi-sdk/connect@1.1.1", "", { "dependencies": { "@ogi-sdk/errors": "^1.0.0", "@ogi-sdk/logger": "^1.0.0", "effect": "^3.22.0" }, "peerDependencies": { "typescript": "^5" } }, "sha512-r3oWE5tkohleyXqJaGmYgrD2yMdhyE37E9dIv80Fikgk7WNwFag6jnIII9p4r91ILezS+THEiqWvy8yZbSsIbw=="],
 
     "@ogi-sdk/errors": ["@ogi-sdk/errors@1.0.0", "", { "dependencies": { "effect": "^3.22.0" } }, "sha512-zzwUw4JsDZwEaa+46hovwJwtzk/OzKD4ANMbAWK5Ar71H6Yc+FixPG5LQPWK1qnt9WY+/y/9zvIwBrDkgmiHVg=="],
 
