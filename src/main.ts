@@ -59,6 +59,9 @@ import {
 import { findBestGameMatch, type Game } from "./string-similarity";
 import {
 	defaultInstallDirectory,
+	gameDirectoryName,
+	repackCleanupDirectories,
+	resolveQueuedDownloadDirectory,
 	sikarugirFrameworks,
 	sikarugirLauncher,
 	sikarugirPrefix,
@@ -67,6 +70,7 @@ import {
 import {
 	buildInstallerLaunchPlan,
 	buildMuteAudioPlan,
+	dismissBlockingCompanions,
 	killWinePrefixProcesses,
 	removeFitgirlHostsEntries,
 	runInstaller,
@@ -79,6 +83,7 @@ import {
 	recoverUpdateTransaction,
 } from "./update-transaction";
 import {
+	cleanupRepackArtifacts,
 	excludeOptionalBins,
 	sniffRepackBins,
 	type OptionalBinGroup,
@@ -376,6 +381,17 @@ addon.on(
 	({ appID, storefront, currentVersion }, event) => {
 		event.defer(async () => {
 			const record = loadInstalledRepack(appID);
+			if (
+				record?.pendingUpdateVersion &&
+				record.pendingUpdateVersion !== currentVersion
+			) {
+				pendingUpdateVersions.set(appID, record.pendingUpdateVersion);
+				event.resolve({
+					available: true,
+					version: record.pendingUpdateVersion,
+				});
+				return;
+			}
 			if (!record?.fitgirlUrl) {
 				// Games installed by another source can still use Fatboy's local update
 				// flow. The storefront build is the stable target OGI validates later.
@@ -536,6 +552,7 @@ type SetupManifest = {
 	// the figure. Used as the install-progress denominator.
 	originalSizeBytes?: number | null;
 	hddSpaceAfterInstallBytes?: number | null;
+	fitgirlGameName?: string;
 };
 
 function resolveSelectedFilePath(
@@ -632,6 +649,42 @@ function findInstallerExeCandidates(repackPath: string): string[] {
 
 		return left.localeCompare(right);
 	});
+}
+
+function findGameExecutableCandidates(gameDirectory: string): string[] {
+	const executableExtensions = [".exe", ".bat", ".cmd"];
+	const excludePatterns = [
+		/unitycrash/i,
+		/crash.*report/i,
+		/error.*report/i,
+		/setup/i,
+		/install/i,
+		/uninstall/i,
+		/redist/i,
+		/vcredist/i,
+		/directx/i,
+		/_commonredist/i,
+		/updater/i,
+		/launcher.*update/i,
+		/^steam_/i,
+	];
+
+	try {
+		return fs
+			.readdirSync(gameDirectory, { withFileTypes: true })
+			.filter((entry) => {
+				if (!entry.isFile()) return false;
+				const lowerName = entry.name.toLowerCase();
+				return (
+					executableExtensions.some((extension) => lowerName.endsWith(extension)) &&
+					!excludePatterns.some((pattern) => pattern.test(entry.name))
+				);
+			})
+			.map((entry) => join(gameDirectory, entry.name))
+			.sort((left, right) => left.localeCompare(right));
+	} catch {
+		return [];
+	}
 }
 
 async function resolveFitgirlSetupExe(
@@ -756,7 +809,7 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 			// Clean up any interrupted previous attempt before starting a new one.
 			recoverUpdateTransaction(installDir, (message) => event.log(message));
 
-			const { backupDir } = await applyLocalUpdatePackages({
+			const { backupDir, appliedPackages } = await applyLocalUpdatePackages({
 				packages,
 				installDir,
 				downloadArtifacts,
@@ -780,7 +833,7 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 				record.pendingBackupDir = backupDir;
 				record.appliedUpdates.push({
 					version: targetVersion,
-					packages,
+					packages: appliedPackages,
 					appliedAt: new Date().toISOString(),
 				});
 				saveInstalledRepack(record);
@@ -839,6 +892,17 @@ addon.on("setup", (data, event) => {
 			path = manifest.pathOfSetupExe as string;
 			event.log(`Using local setup.exe file: ${path}`);
 		}
+		let actualGameName = setupManifest?.fitgirlGameName?.trim();
+		if (!actualGameName) {
+			try {
+				actualGameName = (await addon.getAppDetails(appID, storefront))?.name?.trim();
+			} catch {}
+		}
+		actualGameName ||= name.includes("|")
+			? name.slice(name.indexOf("|") + 1).trim()
+			: name;
+		const suggestedInstallDir = defaultInstallDirectory(path, actualGameName);
+		let setupDirectoryForCleanup: string | undefined;
 
 		let continueFlag = false;
 		// if the INSTALL_HERE folder already exists, and it has content in it, ask the user if they already completed the download or want to retry
@@ -871,6 +935,7 @@ addon.on("setup", (data, event) => {
 			Array.isArray(multiPartFiles) &&
 			multiPartFiles.length > 0
 		) {
+			event.progress = 0;
 			event.log(
 				"Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.",
 			);
@@ -942,7 +1007,7 @@ addon.on("setup", (data, event) => {
 						.setDescription(
 							"Select the directory where the game was previously installed.",
 						)
-						.setDefaultValue(path)
+						.setDefaultValue(suggestedInstallDir)
 						.setInputType("folder"),
 				),
 			)) as { installDir: string };
@@ -951,7 +1016,6 @@ addon.on("setup", (data, event) => {
 			const homeDir = process.env.HOME || process.env.USERPROFILE || "~/";
 			const winePrefixDir = join(homeDir, ".wine-fitgirl");
 			const runsSetupViaWine = process.platform !== "win32";
-			const defaultInstallDir = defaultInstallDirectory(path);
 			const sikarugirBin = sikarugirLauncher(homeDir);
 			const sikarugirWineBin = sikarugirWine(homeDir);
 			const sikarugirWinePrefix = sikarugirPrefix(homeDir);
@@ -971,6 +1035,7 @@ addon.on("setup", (data, event) => {
 			}
 
 			const setupDir = dirname(setupExePath);
+			setupDirectoryForCleanup = setupDir;
 			const bins = sniffRepackBins(setupDir);
 			const optionNameFor = (group: OptionalBinGroup): string =>
 				"optional_" + group.key.replaceAll("-", "_");
@@ -990,17 +1055,17 @@ addon.on("setup", (data, event) => {
 						.setName("installDir")
 						.setDisplayName("Game Installation Directory")
 						.setDescription(
-							"Choose where you want to install the game (this should be different from where the setup files are located)",
+							"Choose the final game directory. The repack files stay in their download directory.",
 						)
-						.setDefaultValue(defaultInstallDir)
+						.setDefaultValue(suggestedInstallDir)
 						.setInputType("folder"),
 				)
 				.addBooleanOption((option) =>
 					option
 						.setName("verifyBins")
-						.setDisplayName("Verify Downloaded Files First")
+						.setDisplayName("Verify Repack Files")
 						.setDescription(
-							"Check the repack's .bin files against its MD5 manifest before installing (replaces the repack's own QuickSFV step).",
+							"Hash the downloaded .bin files before installing. Automated Linux installs dismiss the installer's duplicate QuickSFV pass either way.",
 						)
 						.setDefaultValue(true),
 				);
@@ -1031,20 +1096,37 @@ addon.on("setup", (data, event) => {
 				return;
 			}
 
-			// check if the installDir is a valid path, then check if there is content inside the installDir
-			if (!fs.existsSync(input.installDir)) {
+			input.installDir = input.installDir.trim();
+			const installDirExists = fs.existsSync(input.installDir);
+			if (
+				installDirExists &&
+				!fs.statSync(input.installDir).isDirectory()
+			) {
 				event.fail(
-					"Error: installDir is not a valid path. Please enter a valid path.",
+					"Error: the selected installation path is not a directory.",
 				);
 				return;
 			}
-			const existingFiles = fs
-				.readdirSync(input.installDir)
-				.filter((file) => file !== ".torrent" && file !== "old_files");
-			if (existingFiles.length !== 0 && path !== input.installDir) {
-				input.installDir = join(input.installDir, name);
+			if (!installDirExists && !fs.existsSync(dirname(input.installDir))) {
+				event.fail(
+					"Error: the parent of the selected installation directory does not exist.",
+				);
+				return;
+			}
+			const existingFiles = installDirExists
+				? fs
+						.readdirSync(input.installDir)
+						.filter((file) => file !== ".torrent" && file !== "old_files")
+				: [];
+			const actualDirectoryName = gameDirectoryName(actualGameName);
+			if (
+				existingFiles.length !== 0 &&
+				basename(input.installDir).toLowerCase() !==
+					actualDirectoryName.toLowerCase()
+			) {
+				input.installDir = join(input.installDir, actualDirectoryName);
 				event.log(
-					`installDir is not empty and path is not the same as installDir, so we will append the game name to the installDir to prevent deleting entire folder contents.`,
+					`The selected directory is not empty, so the game will be installed in ${input.installDir}.`,
 				);
 			}
 
@@ -1098,6 +1180,7 @@ addon.on("setup", (data, event) => {
 				fs.mkdirSync(installDir, { recursive: true });
 				const restoreBins = excludeOptionalBins(setupDir, excludedOptional);
 				let lastPhase = "extracting";
+				event.progress = 0;
 				const stopTracking = trackInstallProgress(
 					installDir,
 					estimateInstalledBytes(bins, includedOptional, setupManifest),
@@ -1179,10 +1262,30 @@ addon.on("setup", (data, event) => {
 						event.log(
 							"Running the repack installer silently. Progress is estimated from the install directory's growth on disk.",
 						);
-						const result = await runInstaller(plan, (line) => {
-							const trimmed = line.trim();
-							if (trimmed) event.log(trimmed);
-						});
+						let dismissedVerifier = false;
+						const verifierDismisser = umu
+							? setInterval(() => {
+									if (dismissBlockingCompanions(umu.winePrefix) > 0) {
+										dismissedVerifier = true;
+										event.log(
+											"Dismissed FitGirl's redundant QuickSFV verification window.",
+										);
+									}
+								}, 3_000)
+							: undefined;
+						verifierDismisser?.unref?.();
+						let result: Awaited<ReturnType<typeof runInstaller>>;
+						try {
+							result = await runInstaller(plan, (line) => {
+								const trimmed = line.trim();
+								if (trimmed) event.log(trimmed);
+							});
+						} finally {
+							if (verifierDismisser) clearInterval(verifierDismisser);
+						}
+						if (!dismissedVerifier && input.verifyBins === false) {
+							event.log("Skipped repack file verification.");
+						}
 						if (result.exitCode !== 0) {
 							event.fail(
 								`The repack installer exited with code ${result.exitCode}. ` +
@@ -1450,63 +1553,7 @@ addon.on("setup", (data, event) => {
 			}
 		} // end of !continueFlag else block
 
-		// Function to find executable files in a directory
-		function findExecutableFiles(directory: string): string[] {
-			if (!fs.existsSync(directory)) {
-				return [];
-			}
-
-			const files = fs.readdirSync(directory);
-			const executableExtensions = [".exe", ".bat", ".cmd"];
-			const excludePatterns = [
-				/unitycrash/i,
-				/crash.*report/i,
-				/error.*report/i,
-				/setup/i,
-				/install/i,
-				/uninstall/i,
-				/redist/i,
-				/vcredist/i,
-				/directx/i,
-				/_commonredist/i,
-				/updater/i,
-				/launcher.*update/i,
-				/^steam_/i,
-			];
-
-			return files
-				.filter((file) => {
-					const filePath = join(directory, file);
-					const stats = fs.statSync(filePath);
-
-					// Skip directories
-					if (stats.isDirectory()) {
-						return false;
-					}
-
-					// Check if it has an executable extension
-					const hasExeExtension = executableExtensions.some((ext) =>
-						file.toLowerCase().endsWith(ext),
-					);
-
-					if (!hasExeExtension) {
-						return false;
-					}
-
-					// Exclude unwanted files
-					const shouldExclude = excludePatterns.some((pattern) =>
-						pattern.test(file),
-					);
-
-					return !shouldExclude;
-				})
-				.map((file) => join(directory, file));
-		}
-
-		// okay installed!
-
-		// Try to auto-detect the executable first
-		const potentialExecutables = findExecutableFiles(installDir);
+		const potentialExecutables = findGameExecutableCandidates(installDir);
 		let gameExecutable: { workingDir: string; gameExecutable: string };
 
 		if (potentialExecutables.length === 1) {
@@ -1517,7 +1564,6 @@ addon.on("setup", (data, event) => {
 				gameExecutable: potentialExecutables[0],
 			};
 		} else {
-			// Ask user to select manually
 			if (potentialExecutables.length === 0) {
 				event.log(
 					"No executable files found automatically. Please select manually.",
@@ -1528,34 +1574,71 @@ addon.on("setup", (data, event) => {
 				);
 			}
 
-			gameExecutable = (await event.askForInput(
+			const executableChoices = potentialExecutables.map((executable) =>
+				relative(installDir, executable),
+			);
+			const selectionScreen = new ConfigurationBuilder().addStringOption(
+				(option) =>
+					option
+						.setName("workingDir")
+						.setDisplayName("Game Folder")
+						.setDescription(
+							"Game folder to run from. This is normally the folder containing the game executable.",
+						)
+						.setInputType("folder")
+						.setDefaultValue(installDir),
+			);
+			if (executableChoices.length > 1) {
+				selectionScreen.addStringOption((option) =>
+					option
+						.setName("gameExecutable")
+						.setDisplayName("Executable Path")
+						.setDescription(
+							"Executable to run, relative to the game folder.",
+						)
+						.setAllowedValues(executableChoices)
+						.setInputType("text")
+						.setDefaultValue(executableChoices[0]),
+				);
+			} else {
+				selectionScreen.addStringOption((option) =>
+					option
+						.setName("gameExecutable")
+						.setDisplayName("Executable Path")
+						.setDescription(
+							"Select the game executable inside the game folder.",
+						)
+						.setInputType("file")
+						.setDefaultValue(""),
+				);
+			}
+
+			const selected = (await event.askForInput(
 				"FitGirl Repacks",
-				"Help us help you.",
-				new ConfigurationBuilder()
-					.addStringOption((option) =>
-						option
-							.setName("workingDir")
-							.setDisplayName("Working Directory")
-							.setDescription(
-								"Go to the directory: " +
-									(installDir ?? "(where you installed it)") +
-									" and select the working directory. (usually where the game executable is located)",
-							)
-							.setInputType("folder")
-							.setDefaultValue(installDir),
-					)
-					.addStringOption((option) =>
-						option
-							.setName("gameExecutable")
-							.setDisplayName("Game Executable")
-							.setDescription(
-								"Go to the directory: " +
-									(installDir ?? "(where you installed it)") +
-									" and select the game executable.",
-							)
-							.setInputType("file"),
-					),
+				"Setup your game",
+				selectionScreen,
 			)) as { workingDir: string; gameExecutable: string };
+			const workingDir = selected.workingDir.trim();
+			const selectedExecutable = resolveSelectedFilePath(
+				selected.gameExecutable,
+				workingDir,
+			);
+			if (!fs.existsSync(workingDir) || !fs.statSync(workingDir).isDirectory()) {
+				event.fail("The selected game folder does not exist.");
+				return;
+			}
+			if (
+				!selectedExecutable ||
+				!fs.existsSync(selectedExecutable) ||
+				!fs.statSync(selectedExecutable).isFile()
+			) {
+				event.fail("The selected game executable does not exist.");
+				return;
+			}
+			gameExecutable = {
+				workingDir,
+				gameExecutable: selectedExecutable,
+			};
 		}
 
 		// exec(setupPath)
@@ -1612,6 +1695,7 @@ addon.on("setup", (data, event) => {
 		const sourceRelease = manifest?.fitgirlRelease as string | undefined;
 		const baseVersion = extractRepackVersion(sourceRelease);
 		let version = baseVersion;
+		let pendingUpdateVersion: string | undefined;
 		let pendingBackupDir: string | undefined;
 		const appliedUpdates: {
 			version: string;
@@ -1619,10 +1703,14 @@ addon.on("setup", (data, event) => {
 			appliedAt: string;
 		}[] = [];
 		if (installUpdateGroups.length > 0) {
-			// Torrent-flow updates download into a sibling folder of the torrent's
-			// own directory; direct-flow updates share `path` with the base files.
+			// Relative add-on downloads are rooted at OGI's library directory,
+			// which can be several levels above a nested torrent setup path.
 			const updatesDir = setupManifest?.installUpdatesFolder
-				? join(dirname(path), setupManifest.installUpdatesFolder)
+				? resolveQueuedDownloadDirectory(
+						path,
+						setupManifest.installUpdatesFolder,
+						fs.existsSync,
+					)
 				: path;
 			const targetVersion =
 				setupManifest?.installUpdateTargetVersion ?? baseVersion;
@@ -1671,19 +1759,20 @@ addon.on("setup", (data, event) => {
 				pendingBackupDir = result.backupDir;
 				appliedUpdates.push({
 					version: targetVersion,
-					packages,
+					packages: result.appliedPackages,
 					appliedAt: new Date().toISOString(),
 				});
 				if (updatesDir !== path) {
 					fs.rmSync(updatesDir, { recursive: true, force: true });
 				}
 			} catch (error) {
-				event.fail(
+				pendingUpdateVersion = targetVersion;
+				pendingUpdateVersions.set(appID, targetVersion);
+				event.log(
 					createBackup
-						? `The base game installed, but its automatic updates failed safely: ${error instanceof Error ? error.message : String(error)}`
-						: `The base game installed, but its direct automatic update failed and may have changed some game files: ${error instanceof Error ? error.message : String(error)}`,
+						? `Automatic updates failed safely; finishing the base-game installation with ${targetVersion} still pending: ${error instanceof Error ? error.message : String(error)}`
+						: `Automatic updates failed while applying directly; finishing setup with ${targetVersion} still pending, but some game files may already be changed: ${error instanceof Error ? error.message : String(error)}`,
 				);
-				return;
 			}
 		} else {
 			// Nothing was bundled at download time — offer the guided update
@@ -1701,7 +1790,7 @@ addon.on("setup", (data, event) => {
 					downloadDir: path,
 					event,
 				});
-				if (applied) {
+				if (applied?.status === "applied") {
 					version = applied.version;
 					pendingBackupDir = applied.backupDir;
 					appliedUpdates.push({
@@ -1709,6 +1798,12 @@ addon.on("setup", (data, event) => {
 						packages: applied.packages,
 						appliedAt: new Date().toISOString(),
 					});
+				} else if (applied?.status === "pending") {
+					pendingUpdateVersion = applied.version;
+					pendingUpdateVersions.set(appID, applied.version);
+					event.log(
+						`Updates could not be applied; finishing the base-game installation with ${applied.version} still pending: ${applied.error}`,
+					);
 				}
 			} catch (error) {
 				// The base game is installed; finishing setup beats failing the
@@ -1720,6 +1815,33 @@ addon.on("setup", (data, event) => {
 				);
 			}
 		}
+		const cleanupDirectories = new Set<string>();
+		if (setupDirectoryForCleanup) {
+			for (const directory of repackCleanupDirectories(
+				setupDirectoryForCleanup,
+				fs.existsSync,
+			)) {
+				cleanupDirectories.add(directory);
+			}
+		}
+		if (pendingBackupDir) cleanupDirectories.add(pendingBackupDir);
+		let removedArtifactCount = 0;
+		const failedArtifacts: string[] = [];
+		for (const directory of cleanupDirectories) {
+			const cleanup = cleanupRepackArtifacts(directory);
+			removedArtifactCount += cleanup.removed.length;
+			failedArtifacts.push(...cleanup.failed.map((name) => join(directory, name)));
+		}
+		if (removedArtifactCount > 0) {
+			event.log(
+				`Removed ${removedArtifactCount} FitGirl setup artifact(s) after updates finished.`,
+			);
+		}
+		if (failedArtifacts.length > 0) {
+			event.log(
+				`Could not remove these setup artifacts: ${failedArtifacts.join(", ")}`,
+			);
+		}
 		saveInstalledRepack({
 			appID,
 			storefront,
@@ -1728,6 +1850,7 @@ addon.on("setup", (data, event) => {
 			sourceRelease,
 			installDir,
 			installedVersion: version,
+			pendingUpdateVersion,
 			pendingBackupDir,
 			appliedUpdates,
 		});
@@ -1794,6 +1917,35 @@ function needsManualDownload(links: FileCryptLink[]): boolean {
 	);
 }
 
+type DirectDownloadSelection = {
+	kind: "fuckingfast" | "mixed";
+	links: FileCryptLink[];
+};
+
+function selectDirectDownloadLinks(
+	unlocked: FileCryptLink[],
+): DirectDownloadSelection {
+	const deduped = Array.from(
+		new Map(unlocked.map((link) => [link.url, link])).values(),
+	);
+	if (
+		deduped.every((link) => link.caughtDownload === undefined) &&
+		hasFuckingFastLink(deduped)
+	) {
+		return {
+			kind: "fuckingfast",
+			links: deduped.filter((link) => {
+				try {
+					return resolveServiceFromUrl(link.url).name === "FuckingFast";
+				} catch {
+					return false;
+				}
+			}),
+		};
+	}
+	return { kind: "mixed", links: pickBestLinksPerFile(deduped) };
+}
+
 // Shared resolution for unlocked FileCrypt links: use downloads already
 // caught inside the live FileCrypt browser, take the automated FuckingFast
 // path when available, and send only unresolved links to the standalone
@@ -1805,29 +1957,18 @@ async function resolveDirectDownloadFiles(
 		askForInput?: AskForInput;
 		resolveFuckingFast: (
 			links: { name: string; url: string }[],
+			onResolved?: () => void,
 		) => Promise<DirectDownloadFile[]>;
 		fallbackNamePrefix: string;
+		onResolved?: () => void;
 	},
 ): Promise<DirectDownloadFile[]> {
-	const deduped = Array.from(
-		new Map(unlocked.map((link) => [link.url, link])).values(),
-	);
-
-	if (
-		deduped.every((link) => link.caughtDownload === undefined) &&
-		hasFuckingFastLink(deduped)
-	) {
-		const fuckingFastLinks = deduped.filter((link) => {
-			try {
-				return resolveServiceFromUrl(link.url).name === "FuckingFast";
-			} catch {
-				return false;
-			}
-		});
-		return options.resolveFuckingFast(fuckingFastLinks);
+	const selection = selectDirectDownloadLinks(unlocked);
+	if (selection.kind === "fuckingfast") {
+		return options.resolveFuckingFast(selection.links, options.onResolved);
 	}
 
-	const picked = pickBestLinksPerFile(deduped);
+	const picked = selection.links;
 	if (picked.length === 0) {
 		throw new Error("No usable download links were found");
 	}
@@ -1837,11 +1978,19 @@ async function resolveDirectDownloadFiles(
 		await requestManualDownloadAcknowledgement(options.askForInput);
 	}
 
+	for (const link of picked) {
+		if (link.caughtDownload) options.onResolved?.();
+	}
+
 	const caught =
 		uncaught.length > 0
 			? await catchUserDownloads(uncaught, {
 					onStatus: options.log,
-					onCaught: (linkName, index, total) =>
+					onCaught: (linkName, index, total) => {
+						if (options.onResolved) {
+							options.onResolved();
+							return;
+						}
 						addon.notify({
 							message:
 								index < total
@@ -1849,7 +1998,8 @@ async function resolveDirectDownloadFiles(
 									: `Caught "${linkName}" (${index}/${total}) — all downloads caught`,
 							id: "fatboy-unpack-manual-download-caught",
 							type: "success",
-						}),
+						});
+					},
 				})
 			: [];
 
@@ -1902,6 +2052,19 @@ async function resolveAutomaticFitGirlUpdates(
 	if (unlockedByUpdate.some(needsManualDownload)) {
 		await requestManualDownloadAcknowledgement(askForInput);
 	}
+	const totalLinks = unlockedByUpdate.reduce(
+		(total, links) => total + selectDirectDownloadLinks(links).links.length,
+		0,
+	);
+	let foundLinks = 0;
+	const notifyFoundLink = (): void => {
+		foundLinks += 1;
+		addon.notify({
+			message: `Found link (${foundLinks}/${totalLinks})`,
+			id: "fatboy-unpack-update-link-found",
+			type: "success",
+		});
+	};
 
 	const files: DirectDownloadFile[] = [];
 	const groups: DownloadedUpdateGroup[] = [];
@@ -1910,9 +2073,10 @@ async function resolveAutomaticFitGirlUpdates(
 		log(`Resolving update ${groupIndex + 1}/${updates.length}: ${update.name}`);
 		const resolved = await resolveDirectDownloadFiles(unlockedByUpdate[groupIndex], {
 			log,
-			resolveFuckingFast: (links) =>
-				resolveFuckingFastUpdateFiles(links, catchDownload),
+			resolveFuckingFast: (links, onResolved) =>
+				resolveFuckingFastUpdateFiles(links, catchDownload, onResolved),
 			fallbackNamePrefix: "update-",
+			onResolved: notifyFoundLink,
 		});
 		const groupFiles = resolved.map((file) => ({
 			...file,
@@ -1937,7 +2101,7 @@ async function resolveAutomaticFitGirlUpdates(
  * the latest FitGirl version, downloads the packages through OGI's own
  * download queue (addon.download, visible as real download cards), and applies
  * them with the usual transaction. Returns undefined when there is nothing to
- * do or the user declined; throws only when packages were applied unsafely.
+ * do or the user declined, and preserves a failed updater as pending work.
  */
 async function offerAndApplySetupUpdates(options: {
 	appID: number;
@@ -1949,9 +2113,15 @@ async function offerAndApplySetupUpdates(options: {
 	event: SetupEvent;
 }): Promise<
 	| {
+			status: "applied";
 			version: string;
 			packages: string[];
 			backupDir?: string;
+	  }
+	| {
+			status: "pending";
+			version: string;
+			error: string;
 	  }
 	| undefined
 > {
@@ -2042,32 +2212,46 @@ async function offerAndApplySetupUpdates(options: {
 	event.log("Update downloads finished.");
 
 	const packages = resolveDownloadedUpdatePackages(updatesDir, resolved.groups);
-	const result = await applyLocalUpdatePackages({
-		packages,
-		installDir,
-		downloadArtifacts: resolved.files.map((file) =>
-			join(updatesDir, file.name),
-		),
-		targetVersion,
-		currentLibraryInfo: {
-			appID,
-			cwd: installDir,
-			launchExecutable,
-			umu: { umuId: `steam:${appID}` },
-		},
-		context: {
-			platform: process.platform,
-			umuRunPath: UMU_BIN,
-			homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
-		},
-		log: (message) => event.log(message),
-		setProgress: (progress) => {
-			event.progress = 40 + progress * 0.6;
-		},
-		createBackup: backupBeforeUpdates(),
-	});
+	let result: Awaited<ReturnType<typeof applyLocalUpdatePackages>>;
+	try {
+		result = await applyLocalUpdatePackages({
+			packages,
+			installDir,
+			downloadArtifacts: resolved.files.map((file) =>
+				join(updatesDir, file.name),
+			),
+			targetVersion,
+			currentLibraryInfo: {
+				appID,
+				cwd: installDir,
+				launchExecutable,
+				umu: { umuId: `steam:${appID}` },
+			},
+			context: {
+				platform: process.platform,
+				umuRunPath: UMU_BIN,
+				homeDir: process.env.HOME || process.env.USERPROFILE || "~/",
+			},
+			log: (message) => event.log(message),
+			setProgress: (progress) => {
+				event.progress = 40 + progress * 0.6;
+			},
+			createBackup: backupBeforeUpdates(),
+		});
+	} catch (error) {
+		return {
+			status: "pending",
+			version: targetVersion,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
 	fs.rmSync(updatesDir, { recursive: true, force: true });
-	return { version: targetVersion, packages, backupDir: result.backupDir };
+	return {
+		status: "applied",
+		version: targetVersion,
+		packages: result.appliedPackages,
+		backupDir: result.backupDir,
+	};
 }
 
 addon.on("request-dl", (appID, info, event) => {

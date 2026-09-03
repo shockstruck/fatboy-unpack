@@ -57,14 +57,28 @@ function argumentFromOnclick(onclick: string | null): string | undefined {
 	return onclick?.match(/\(\s*["']([^"']+)["']\s*\)/)?.[1];
 }
 
+function dataValueFromOnclick(element: HTMLElement): string | undefined {
+	const onclick = element.getAttribute("onclick");
+	const attributeName = onclick?.match(
+		/getAttribute\(\s*["']([^"']+)["']\s*\)/i,
+	)?.[1];
+	if (attributeName) {
+		return element.getAttribute(attributeName) ?? undefined;
+	}
+	return argumentFromOnclick(onclick);
+}
+
+function linkIdFromHref(href: string | null): string | undefined {
+	if (!href) return undefined;
+	const match = href.match(/\/Link\/([^/?#]+?)(?:\.html)?(?:[?#]|$)/i);
+	return match?.[1];
+}
+
 export function parseFileCryptContainer(html: string): FileCryptContainerIds {
 	const document = new JSDOM(html).window.document;
-	const dlcId = argumentFromOnclick(
-		document
-			.querySelector<HTMLElement>(".dlcdownload")
-			?.getAttribute("onclick") ?? null,
-	);
-	const linkIds = Array.from(
+	const dlcButton = document.querySelector<HTMLElement>(".dlcdownload");
+	const dlcId = dlcButton ? dataValueFromOnclick(dlcButton) : undefined;
+	const onclickLinkIds = Array.from(
 		document.querySelectorAll<HTMLElement>("[onclick]"),
 	).flatMap((element) => {
 		const onclick = element.getAttribute("onclick");
@@ -73,6 +87,15 @@ export function parseFileCryptContainer(html: string): FileCryptContainerIds {
 		if (!argument) return [];
 		return [element.getAttribute(argument) ?? argument];
 	});
+	const hrefLinkIds = Array.from(
+		document.querySelectorAll<HTMLAnchorElement>(
+			'a.button.download[href*="/Link/"]',
+		),
+	).flatMap((anchor) => {
+		const id = linkIdFromHref(anchor.getAttribute("href"));
+		return id ? [id] : [];
+	});
+	const linkIds = [...new Set([...onclickLinkIds, ...hrefLinkIds])];
 
 	return dlcId ? { dlcId, linkIds } : { linkIds };
 }

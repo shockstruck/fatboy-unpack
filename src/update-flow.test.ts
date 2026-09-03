@@ -46,8 +46,9 @@ describe("local update flow", () => {
 		fs.writeFileSync(join(packageDir, "update-marker.bin"), "payload");
 
 		const logs: string[] = [];
-		await applyLocalUpdatePackages({
+		const result = await applyLocalUpdatePackages({
 			packages: [packageDir],
+			downloadArtifacts: [packageDir],
 			installDir,
 			targetVersion: "v0.6.9",
 			currentLibraryInfo: {
@@ -81,6 +82,43 @@ describe("local update flow", () => {
 		).toBe("old build");
 		expect(logs.some((line) => line.includes("Copying update files"))).toBe(
 			true,
+		);
+		expect(fs.existsSync(packageDir)).toBe(false);
+		expect(result.appliedPackages).toEqual([packageDir]);
+	});
+
+	test("keeps downloaded packages when the update transaction fails", async () => {
+		const installDir = join(root, "Game");
+		fs.mkdirSync(installDir);
+		fs.writeFileSync(join(installDir, "data.bin"), "old build");
+
+		const packageDir = join(root, "failed update");
+		fs.mkdirSync(packageDir);
+		fs.writeFileSync(join(packageDir, "data.bin"), "new build");
+
+		await expect(
+			applyLocalUpdatePackages({
+				packages: [packageDir],
+				downloadArtifacts: [packageDir],
+				installDir,
+				targetVersion: "v2",
+				currentLibraryInfo: {
+					appID: 1,
+					cwd: installDir,
+					launchExecutable: "missing.exe",
+				},
+				context: {
+					platform: "linux",
+					umuRunPath: "/not-needed-for-overlay",
+					homeDir: root,
+				},
+				log: () => {},
+			}),
+		).rejects.toThrow("game executable missing.exe is missing");
+
+		expect(fs.existsSync(packageDir)).toBe(true);
+		expect(fs.readFileSync(join(installDir, "data.bin"), "utf-8")).toBe(
+			"old build",
 		);
 	});
 });

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
 	defaultInstallDirectory,
+	gameDirectoryName,
+	repackCleanupDirectories,
+	resolveQueuedDownloadDirectory,
 	sikarugirFrameworks,
 	sikarugirLauncher,
 	sikarugirPrefix,
@@ -14,6 +18,64 @@ describe("setup runtime", () => {
 				"/Users/test/Games/Terraria/.torrent/Terraria [FitGirl Repack]/",
 			),
 		).toBe("/Users/test/Games/Terraria");
+	});
+
+	test("uses a sibling directory named after the actual game", () => {
+		expect(
+			defaultInstallDirectory(
+				"/Users/test/Games/FuckingFast _ Terraria/",
+				"Terraria",
+			),
+		).toBe("/Users/test/Games/Terraria");
+		expect(
+			defaultInstallDirectory(
+				"/Users/test/Games/1337x _ Terraria/.torrent/Terraria [FitGirl Repack]/",
+				"Terraria",
+			),
+		).toBe("/Users/test/Games/Terraria");
+	});
+
+	test("keeps an existing game-named directory and sanitizes unsafe names", () => {
+		expect(defaultInstallDirectory("/Users/test/Games/Terraria/", "Terraria")).toBe(
+			"/Users/test/Games/Terraria",
+		);
+		expect(gameDirectoryName('Game: Deluxe/Edition?')).toBe(
+			"Game_ Deluxe_Edition_",
+		);
+	});
+
+	test("finds queued update downloads rooted above a nested torrent setup", () => {
+		const root = "/mnt/OGI";
+		const updatesDir = join(root, "fatboy-updates-123");
+		const setupDir = join(root, "Game", "torrent-hash", "Game [FitGirl Repack]");
+		expect(
+			resolveQueuedDownloadDirectory(
+				setupDir,
+				"fatboy-updates-123",
+				(path) => path === updatesDir,
+			),
+		).toBe(updatesDir);
+	});
+
+	test("falls back to the legacy sibling update location", () => {
+		expect(
+			resolveQueuedDownloadDirectory(
+				"/mnt/OGI/Game/repack",
+				"fatboy-updates-123",
+				() => false,
+			),
+		).toBe("/mnt/OGI/Game/fatboy-updates-123");
+	});
+
+	test("includes OGI's mirrored repack directory under old_files", () => {
+		const setupDir = "/mnt/OGI/Game/hash/Game [FitGirl Repack]";
+		const mirroredDir = "/mnt/OGI/Game/old_files/hash/Game [FitGirl Repack]";
+		expect(
+			repackCleanupDirectories(
+				setupDir,
+				(path) => path === "/mnt/OGI/Game/old_files" || path === mirroredDir,
+			),
+		).toEqual([setupDir, mirroredDir]);
 	});
 
 	test("resolves OGI's shared Sikarugir launcher", () => {

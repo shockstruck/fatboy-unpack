@@ -21,6 +21,19 @@ describe("parseFileCryptContainer", () => {
 		});
 	});
 
+	test("parses current FileCrypt data tokens and href-based links", () => {
+		const html = `
+			<button class="dlcdownload" data-kDbcl="current-dlc" onclick="DownloadDLC(this.getAttribute('data-kDbcl'))">dlc</button>
+			<a class="button download" href="/Link/18E5369063.html"></a>
+			<a class="button download" href="https://filecrypt.cc/Link/48585F7DC5.html?x=1"></a>
+		`;
+
+		expect(parseFileCryptContainer(html)).toEqual({
+			dlcId: "current-dlc",
+			linkIds: ["18E5369063", "48585F7DC5"],
+		});
+	});
+
 	test("returns no ids when the container is still behind a captcha", () => {
 		const html = `<form id="captcha"><div class="cf-turnstile"></div></form>`;
 

@@ -8,12 +8,17 @@ import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 
 export type StagedInstallerUpdate = {
 	kind: "installer";
+	installerFamily: "inno" | "rune";
 	/** Isolated directory holding this update's extracted files. */
 	stagingDir: string;
 	/** The outer installer to invoke. Internal batch/patch tools are never run directly. */
 	installerExe: string;
 	/** Companion payloads that must stay siblings of the installer. */
 	companionFiles: string[];
+	/** Scene releases declared as prerequisites by an included NFO. */
+	sceneRequirements: string[];
+	/** Family of a single cumulative base-release prerequisite, if present. */
+	baseReleaseFamily?: string;
 };
 
 export type StagedOverlayUpdate = {
@@ -89,6 +94,50 @@ function looksLikeInstaller(file: string): boolean {
 	);
 }
 
+function sceneRequirements(files: string[]): string[] {
+	for (const file of files) {
+		if (!file.toLowerCase().endsWith(".nfo")) continue;
+		const lines = fs.readFileSync(file, "latin1").split(/\r?\n/);
+		const marker = lines.findIndex((line) =>
+			/You need the following releases for this/i.test(line),
+		);
+		if (marker === -1) continue;
+
+		const requirements: string[] = [];
+		for (const line of lines.slice(marker + 1)) {
+			const normalized = line.replace(/[^\x20-\x7e]/g, "").trim();
+			if (!normalized) {
+				if (requirements.length > 0) break;
+				continue;
+			}
+			if (/^[A-Za-z0-9].*-[A-Za-z0-9]+$/.test(normalized)) {
+				requirements.push(normalized);
+			} else if (requirements.length > 0) {
+				break;
+			}
+		}
+		return requirements;
+	}
+	return [];
+}
+
+export function compatibleUpdateStart(
+	updates: StagedUpdate[],
+	installedFamily: string | undefined,
+): number {
+	if (!installedFamily) return 0;
+	let start = 0;
+	for (const [index, update] of updates.entries()) {
+		if (
+			update.kind === "installer" &&
+			update.baseReleaseFamily === installedFamily.toUpperCase()
+		) {
+			start = index;
+		}
+	}
+	return start;
+}
+
 function classifyStagedUpdate(
 	stagingDir: string,
 	forcedInstaller?: string,
@@ -125,12 +174,26 @@ function classifyStagedUpdate(
 		}
 		return { kind: "overlay", stagingDir, payloadDir: stagingDir };
 	}
+	const requirements = sceneRequirements(files);
+	const installerFamily =
+		files.some((file) => file.toLowerCase().endsWith(".cdx")) &&
+		files.some((file) => /[\\/]rune[\\/]/i.test(file))
+			? "rune"
+			: "inno";
+	const onlyRequirement = requirements.length === 1 ? requirements[0] : undefined;
+	const baseReleaseFamily =
+		onlyRequirement && !/(?:^|[._ -])update(?:[._ -]|$)/i.test(onlyRequirement)
+			? onlyRequirement.match(/-([A-Za-z0-9]+)$/)?.[1]?.toUpperCase()
+			: undefined;
 
 	return {
 		kind: "installer",
+		installerFamily,
 		stagingDir,
 		installerExe: installerCandidates[0],
 		companionFiles: files.filter((file) => file !== installerCandidates[0]),
+		sceneRequirements: requirements,
+		baseReleaseFamily,
 	};
 }
 

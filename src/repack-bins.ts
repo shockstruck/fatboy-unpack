@@ -37,6 +37,19 @@ const REQUIRED_BIN = /^fg-\d+\.bin$/i;
 const OPTIONAL_BIN = /^fg-optional-(.+)\.bin$/i;
 const SELECTIVE_BIN = /^fg-selective-(.+)\.bin$/i;
 const EXCLUDED_DIR = "fatboy-excluded-bins";
+const REPACK_ARTIFACT_FILE = [
+	/^fg-.*\.bin$/i,
+	/^setup\.exe$/i,
+	/^verify bin files before installation\.(?:bat|cmd)$/i,
+	/^fitgirl-bins\.md5$/i,
+	/^fatboy-install\.log$/i,
+];
+const REPACK_ARTIFACT_DIRECTORY = [/^md5$/i, /^fatboy-excluded-bins$/i];
+
+export type RepackArtifactCleanup = {
+	removed: string[];
+	failed: string[];
+};
 
 /** Multi-part bins end in "-2", "-3", ...; they belong to the first part's group. */
 function groupKey(suffix: string): string {
@@ -130,6 +143,37 @@ export function excludeOptionalBins(
 			// Not empty or already gone — either is fine.
 		}
 	};
+}
+
+/**
+ * Removes only known FitGirl setup payloads. This is intentionally safe when
+ * an older install put the game and repack files in the same directory.
+ */
+export function cleanupRepackArtifacts(
+	setupDir: string,
+): RepackArtifactCleanup {
+	const result: RepackArtifactCleanup = { removed: [], failed: [] };
+	if (!fs.existsSync(setupDir)) return result;
+
+	for (const entry of fs.readdirSync(setupDir, { withFileTypes: true })) {
+		const matches = entry.isDirectory()
+			? REPACK_ARTIFACT_DIRECTORY.some((pattern) => pattern.test(entry.name))
+			: entry.isFile() &&
+				REPACK_ARTIFACT_FILE.some((pattern) => pattern.test(entry.name));
+		if (!matches) continue;
+
+		try {
+			fs.rmSync(join(setupDir, entry.name), {
+				recursive: entry.isDirectory(),
+				force: true,
+			});
+			result.removed.push(entry.name);
+		} catch {
+			result.failed.push(entry.name);
+		}
+	}
+
+	return result;
 }
 
 /** Recovers bins a crashed earlier run left in the excluded folder. */

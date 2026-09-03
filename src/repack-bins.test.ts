@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import { excludeOptionalBins, sniffRepackBins } from "./repack-bins";
+import {
+	cleanupRepackArtifacts,
+	excludeOptionalBins,
+	sniffRepackBins,
+} from "./repack-bins";
 
 let tempDir: string | undefined;
 
@@ -86,5 +90,35 @@ describe("excludeOptionalBins", () => {
 		const bins = sniffRepackBins(dir);
 		expect(bins.optional).toHaveLength(1);
 		expect(fs.existsSync(join(dir, "fg-optional-soundtrack.bin"))).toBe(true);
+	});
+});
+
+describe("cleanupRepackArtifacts", () => {
+	test("removes FitGirl payloads without deleting installed game files", () => {
+		const dir = makeRepackDir({
+			"setup.exe": 10,
+			"fg-01.bin": 100,
+			"fg-optional-soundtrack.bin": 40,
+			"Verify BIN files before installation.bat": 5,
+			"fatboy-install.log": 5,
+			"Game.exe": 25,
+			"UnityPlayer.dll": 25,
+		});
+		fs.mkdirSync(join(dir, "MD5"));
+		fs.writeFileSync(join(dir, "MD5", "fitgirl-bins.md5"), "hash");
+
+		const result = cleanupRepackArtifacts(dir);
+
+		expect(result.failed).toEqual([]);
+		expect(result.removed.sort()).toEqual([
+			"MD5",
+			"Verify BIN files before installation.bat",
+			"fatboy-install.log",
+			"fg-01.bin",
+			"fg-optional-soundtrack.bin",
+			"setup.exe",
+		]);
+		expect(fs.existsSync(join(dir, "Game.exe"))).toBe(true);
+		expect(fs.existsSync(join(dir, "UnityPlayer.dll"))).toBe(true);
 	});
 });

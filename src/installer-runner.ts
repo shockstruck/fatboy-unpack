@@ -22,6 +22,10 @@ export type InstallerTarget = {
 	components?: string[];
 	/** Checkbox tasks to select; [] deselects them all (hosts file, icons). */
 	tasks?: string[];
+	/** Keep Inno's progress window for updater scripts that require its handle. */
+	showProgressWindow?: boolean;
+	/** Show a custom installer page that FatBoy or the user must drive. */
+	interactive?: boolean;
 };
 
 export type UmuContext = {
@@ -62,8 +66,10 @@ function buildInnoArgs(
 ): string[] {
 	return [
 		"/SP-",
-		"/VERYSILENT",
-		"/SUPPRESSMSGBOXES",
+		...(target.interactive
+			? []
+			: [target.showProgressWindow ? "/SILENT" : "/VERYSILENT"]),
+		...(target.interactive ? [] : ["/SUPPRESSMSGBOXES"]),
 		"/NORESTART",
 		"/NOCLOSEAPPLICATIONS",
 		"/NORESTARTAPPLICATIONS",
@@ -75,6 +81,136 @@ function buildInnoArgs(
 			: []),
 		...(target.tasks ? [`/TASKS=${target.tasks.join(",")}`] : []),
 	];
+}
+
+type GameWindow = { id: string; pid: string };
+
+function visibleGameWindows(gameId: string): GameWindow[] {
+	if (process.platform !== "linux") return [];
+	const appId = gameId.replace(/^umu-/, "");
+	try {
+		const ids = execFileSync(
+			"xdotool",
+			["search", "--onlyvisible", "--class", `steam_app_${appId}`],
+			{ encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+		)
+			.split(/\s+/)
+			.filter(Boolean);
+		return ids.flatMap((id) => {
+			try {
+				const pid = execFileSync("xdotool", ["getwindowpid", id], {
+					encoding: "utf-8",
+					stdio: ["ignore", "pipe", "ignore"],
+				}).trim();
+				return pid ? [{ id, pid }] : [];
+			} catch {
+				return [];
+			}
+		});
+	} catch {
+		return [];
+	}
+}
+
+function gameWindowKey(window: GameWindow): string {
+	return `${window.id}:${window.pid}`;
+}
+
+function windowDimensions(
+	windowId: string,
+): { width: number; height: number } | undefined {
+	try {
+		const geometry = execFileSync(
+			"xdotool",
+			["getwindowgeometry", "--shell", windowId],
+			{ encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+		);
+		const width = Number(geometry.match(/^WIDTH=(\d+)$/m)?.[1] ?? 0);
+		const height = Number(geometry.match(/^HEIGHT=(\d+)$/m)?.[1] ?? 0);
+		return { width, height };
+	} catch {
+		return undefined;
+	}
+}
+
+export async function driveRuneInstaller(
+	gameId: string,
+	ignoredWindows: Set<string>,
+	signal: AbortSignal,
+): Promise<boolean> {
+	if (process.platform !== "linux") return false;
+	for (let attempt = 0; attempt < 120 && !signal.aborted; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		const window = visibleGameWindows(gameId).find(
+			(candidate) => {
+				const dimensions = windowDimensions(candidate.id);
+				return (
+					!ignoredWindows.has(gameWindowKey(candidate)) &&
+					Boolean(dimensions && dimensions.width > 100 && dimensions.height > 100)
+				);
+			},
+		);
+		if (!window) continue;
+		const { id: windowId } = window;
+		const initialDimensions = windowDimensions(windowId);
+		if (!initialDimensions) continue;
+
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		try {
+			execFileSync("xdotool", ["windowactivate", "--sync", windowId], {
+				stdio: "ignore",
+			});
+			execFileSync("xdotool", ["key", "--window", windowId, "alt+c"], {
+				stdio: "ignore",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			execFileSync("xdotool", ["key", "--window", windowId, "alt+i"], {
+				stdio: "ignore",
+			});
+			// RUNE's custom Finish button has no reliable accelerator. Its action
+			// button stays in the same lower-right slot; clicks are harmless while
+			// disabled during scanning/patching and close the window once enabled.
+			for (let finishAttempt = 0; finishAttempt < 1_800; finishAttempt += 1) {
+				if (
+					signal.aborted ||
+					!visibleGameWindows(gameId).some(
+						(candidate) => gameWindowKey(candidate) === gameWindowKey(window),
+					)
+				) {
+					return true;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 1_000));
+				const dimensions = windowDimensions(windowId);
+				if (!dimensions) break;
+				if (dimensions.height <= initialDimensions.height + 5) continue;
+				try {
+					execFileSync(
+						"xdotool",
+						[
+							"mousemove",
+							"--window",
+							windowId,
+							String(Math.round(dimensions.width * 0.73)),
+							String(Math.round(dimensions.height * 0.51)),
+							"click",
+							"1",
+						],
+						{ stdio: "ignore" },
+					);
+				} catch {
+					break;
+				}
+			}
+			return false;
+		} catch {
+			// The window may have been replaced while Inno initialized; retry.
+		}
+	}
+	return false;
+}
+
+export function snapshotGameWindows(gameId: string): Set<string> {
+	return new Set(visibleGameWindows(gameId).map(gameWindowKey));
 }
 
 function buildUmuEnv(
@@ -179,12 +315,11 @@ export function removeFitgirlHostsEntries(options: {
 }
 
 /**
- * Companion tools the ElAmigos/FitGirl updaters launch from postinstall [Run]
- * entries that open a GUI and wait for a human (RapidCRC's verification
- * window). Their batch.bat sibling does real patching (hpatchz) and must be
- * left alone; only these viewers are safe to dismiss.
+ * Companion verification tools launched from postinstall [Run] entries that
+ * open a GUI and wait for a human. Their sibling patch/install processes do
+ * real work and must be left alone; only these viewers are safe to dismiss.
  */
-const BLOCKING_COMPANIONS = /rapidcrc/i;
+const BLOCKING_COMPANIONS = /(?:rapidcrc|quicksfv)/i;
 
 /**
  * Kills interactive companion windows of winePrefix so /VERYSILENT updater

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	buildInstallerLaunchPlan,
 	convertUmuIdToGameId,
+	dismissBlockingCompanions,
 	killWinePrefixProcesses,
 	removeFitgirlHostsEntries,
 	toWinePath,
@@ -37,6 +38,25 @@ describe("installer runner", () => {
 		expect(plan.cwd).toBe("/staging/update-1");
 		expect(plan.args).toContain("/VERYSILENT");
 		expect(plan.args).toContain(`/DIR=${target.installDir}`);
+	});
+
+	test("keeps Inno's progress window for compatibility-sensitive updaters", () => {
+		const plan = buildInstallerLaunchPlan(
+			{ ...target, showProgressWindow: true },
+			{ platform: "win32", baseEnv: {} },
+		);
+		expect(plan.args).toContain("/SILENT");
+		expect(plan.args).not.toContain("/VERYSILENT");
+	});
+
+	test("leaves custom RUNE installer controls available for automation", () => {
+		const plan = buildInstallerLaunchPlan(
+			{ ...target, interactive: true },
+			{ platform: "win32", baseEnv: {} },
+		);
+		expect(plan.args).not.toContain("/SILENT");
+		expect(plan.args).not.toContain("/VERYSILENT");
+		expect(plan.args).not.toContain("/SUPPRESSMSGBOXES");
 	});
 
 	test("builds a UMU plan with per-game prefix and Wine paths", () => {
@@ -132,6 +152,32 @@ describe("installer runner", () => {
 			expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
 		} finally {
 			child.kill("SIGKILL");
+		}
+	});
+
+	test("dismisses a QuickSFV verifier without killing unrelated prefix processes", async () => {
+		const fakePrefix = join(tmpdir(), `fatboy-verifier-${process.pid}`);
+		const verifier = spawn(
+			"bash",
+			["-c", "exec -a QuickSFV.exe sleep 30"],
+			{
+				env: { ...process.env, WINEPREFIX: fakePrefix },
+				stdio: "ignore",
+			},
+		);
+		const unrelated = spawn("sleep", ["30"], {
+			env: { ...process.env, WINEPREFIX: fakePrefix },
+			stdio: "ignore",
+		});
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(dismissBlockingCompanions(fakePrefix)).toBe(1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(verifier.exitCode !== null || verifier.signalCode !== null).toBe(true);
+			expect(unrelated.exitCode).toBeNull();
+		} finally {
+			verifier.kill("SIGKILL");
+			unrelated.kill("SIGKILL");
 		}
 	});
 });
