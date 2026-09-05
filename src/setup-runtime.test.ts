@@ -35,6 +35,29 @@ describe("setup runtime", () => {
 		).toBe("/Users/test/Games/Terraria");
 	});
 
+	test("installs above OGI's hash staging directory", () => {
+		const hash = "4bd6c7e4c009f5abdb7461db6b78d33aac591867";
+		expect(
+			defaultInstallDirectory(
+				`/mnt/OGI/Dead Cells/${hash}/Dead Cells [FitGirl Repack]`,
+				"Dead Cells",
+			),
+		).toBe("/mnt/OGI/Dead Cells");
+		expect(
+			defaultInstallDirectory(
+				`/mnt/OGI/${hash}/Dead Cells [FitGirl Repack]`,
+				"Dead Cells",
+			),
+		).toBe("/mnt/OGI/Dead Cells");
+	});
+
+	test("strips hash staging even when no game name is available", () => {
+		const hash = "4bd6c7e4c009f5abdb7461db6b78d33aac591867";
+		expect(
+			defaultInstallDirectory(`/mnt/OGI/Dead Cells/${hash}/repack`),
+		).toBe("/mnt/OGI/Dead Cells");
+	});
+
 	test("keeps an existing game-named directory and sanitizes unsafe names", () => {
 		expect(defaultInstallDirectory("/Users/test/Games/Terraria/", "Terraria")).toBe(
 			"/Users/test/Games/Terraria",

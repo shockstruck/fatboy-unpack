@@ -55,6 +55,20 @@ export function gameDirectoryName(gameName: string): string {
 	);
 }
 
+const OGI_HASH_DIRECTORY = /^[a-f0-9]{32,64}$/i;
+
+function ogiHashParent(setupDirectory: string): string | undefined {
+	let current = setupDirectory.replace(/[\\/]+$/, "") || setupDirectory;
+	while (true) {
+		if (OGI_HASH_DIRECTORY.test(basename(current))) {
+			return dirname(current);
+		}
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+}
+
 export function defaultInstallDirectory(
 	setupDirectory: string,
 	gameName?: string,
@@ -64,11 +78,17 @@ export function defaultInstallDirectory(
 	const setupRoot = torrentMarker === -1
 		? setupDirectory
 		: setupDirectory.slice(0, torrentMarker);
+	const hashParent = ogiHashParent(setupRoot);
 	if (!gameName) {
-		return setupRoot;
+		return hashParent ?? setupRoot;
 	}
 
 	const directoryName = gameDirectoryName(gameName);
+	if (hashParent) {
+		return basename(hashParent).toLowerCase() === directoryName.toLowerCase()
+			? hashParent
+			: join(hashParent, directoryName);
+	}
 	const trimmedSetupRoot = setupRoot.replace(/[\\/]+$/, "") || setupRoot;
 	if (basename(trimmedSetupRoot).toLowerCase() === directoryName.toLowerCase()) {
 		return trimmedSetupRoot;
