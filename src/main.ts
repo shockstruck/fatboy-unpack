@@ -660,6 +660,7 @@ function findGameExecutableCandidates(gameDirectory: string): string[] {
 		/setup/i,
 		/install/i,
 		/uninstall/i,
+		/^unins\d*\.exe$/i,
 		/redist/i,
 		/vcredist/i,
 		/directx/i,
