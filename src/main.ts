@@ -1957,15 +1957,14 @@ async function resolveDirectDownloadFiles(
 		askForInput?: AskForInput;
 		resolveFuckingFast: (
 			links: { name: string; url: string }[],
-			onResolved?: () => void,
 		) => Promise<DirectDownloadFile[]>;
 		fallbackNamePrefix: string;
-		onResolved?: () => void;
+		onCaught?: () => void | Promise<void>;
 	},
 ): Promise<DirectDownloadFile[]> {
 	const selection = selectDirectDownloadLinks(unlocked);
 	if (selection.kind === "fuckingfast") {
-		return options.resolveFuckingFast(selection.links, options.onResolved);
+		return options.resolveFuckingFast(selection.links);
 	}
 
 	const picked = selection.links;
@@ -1978,17 +1977,13 @@ async function resolveDirectDownloadFiles(
 		await requestManualDownloadAcknowledgement(options.askForInput);
 	}
 
-	for (const link of picked) {
-		if (link.caughtDownload) options.onResolved?.();
-	}
-
 	const caught =
 		uncaught.length > 0
 			? await catchUserDownloads(uncaught, {
 					onStatus: options.log,
-					onCaught: (linkName, index, total) => {
-						if (options.onResolved) {
-							options.onResolved();
+					onCaught: async (linkName, index, total) => {
+						if (options.onCaught) {
+							await options.onCaught();
 							return;
 						}
 						addon.notify({
@@ -2034,6 +2029,17 @@ async function resolveAutomaticFitGirlUpdates(
 			(await axiosGetWithDDOSGuard(addon, FITGIRL_UPDATES_URL, {})).data,
 			gameName,
 		);
+	let foundLinks = 0;
+	const notifyFoundLink = async (): Promise<void> => {
+		foundLinks += 1;
+		addon.notify({
+			message: `Found link (${foundLinks}/${updates.length})`,
+			id: "fatboy-unpack-update-link-found",
+			type: "success",
+		});
+		// Give OGI time to surface the toast before the next browser page opens.
+		await new Promise((resolve) => setTimeout(resolve, 750));
+	};
 
 	// Sequential on purpose: unlocking a container can open a rendering
 	// browser window, and parallel unlocks would open them all at once.
@@ -2044,6 +2050,7 @@ async function resolveAutomaticFitGirlUpdates(
 			await unlockFileCryptContainer(update.url, {
 				request: requestFileCryptResource,
 				renderContainer: renderFileCryptContainer,
+				onCaughtDownload: notifyFoundLink,
 			}),
 		);
 	}
@@ -2052,20 +2059,6 @@ async function resolveAutomaticFitGirlUpdates(
 	if (unlockedByUpdate.some(needsManualDownload)) {
 		await requestManualDownloadAcknowledgement(askForInput);
 	}
-	const totalLinks = unlockedByUpdate.reduce(
-		(total, links) => total + selectDirectDownloadLinks(links).links.length,
-		0,
-	);
-	let foundLinks = 0;
-	const notifyFoundLink = (): void => {
-		foundLinks += 1;
-		addon.notify({
-			message: `Found link (${foundLinks}/${totalLinks})`,
-			id: "fatboy-unpack-update-link-found",
-			type: "success",
-		});
-	};
-
 	const files: DirectDownloadFile[] = [];
 	const groups: DownloadedUpdateGroup[] = [];
 
@@ -2073,10 +2066,10 @@ async function resolveAutomaticFitGirlUpdates(
 		log(`Resolving update ${groupIndex + 1}/${updates.length}: ${update.name}`);
 		const resolved = await resolveDirectDownloadFiles(unlockedByUpdate[groupIndex], {
 			log,
-			resolveFuckingFast: (links, onResolved) =>
-				resolveFuckingFastUpdateFiles(links, catchDownload, onResolved),
+			resolveFuckingFast: (links) =>
+				resolveFuckingFastUpdateFiles(links, catchDownload),
 			fallbackNamePrefix: "update-",
-			onResolved: notifyFoundLink,
+			onCaught: notifyFoundLink,
 		});
 		const groupFiles = resolved.map((file) => ({
 			...file,

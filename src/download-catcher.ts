@@ -367,7 +367,11 @@ type CatchUserDownloadsOptions = {
 	// Fired after each successful catch, before the next page loads —
 	// main.ts surfaces this as a toast so the user knows another click
 	// is coming.
-	onCaught?: (linkName: string, index: number, total: number) => void;
+	onCaught?: (
+		linkName: string,
+		index: number,
+		total: number,
+	) => void | Promise<void>;
 	timeoutMsPerLink?: number;
 };
 
@@ -424,7 +428,7 @@ async function catchUserDownloadsNow(
 				);
 				results.push(caught);
 				options.onStatus(`Caught download for "${link.name}".`);
-				options.onCaught?.(link.name, index + 1, links.length);
+				await options.onCaught?.(link.name, index + 1, links.length);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				options.onStatus(`Could not catch a download for "${link.name}": ${message}`);

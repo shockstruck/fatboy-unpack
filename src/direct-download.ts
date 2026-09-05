@@ -94,7 +94,6 @@ export async function resolveFuckingFastFiles(
 export async function resolveFuckingFastUpdateFiles(
 	links: DirectDownloadLink[],
 	resolvePage: DownloadPageResolver,
-	onResolved?: (index: number, total: number) => void,
 ): Promise<DirectDownloadFile[]> {
 	const files: DirectDownloadFile[] = [];
 	for (const [index, link] of links.entries()) {
@@ -114,7 +113,6 @@ export async function resolveFuckingFastUpdateFiles(
 				: `update-${index}.rar`,
 			downloadURL,
 		});
-		onResolved?.(index + 1, links.length);
 	}
 	return files;
 }

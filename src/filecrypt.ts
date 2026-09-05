@@ -32,6 +32,9 @@ export type FileCryptRequest = (
 export type FileCryptDependencies = {
 	request: FileCryptRequest;
 	renderContainer?: (url: string) => Promise<string | FileCryptResponse>;
+	onCaughtDownload?: (
+		download: FileCryptCaughtDownload,
+	) => void | Promise<void>;
 };
 
 export const requestFileCryptResource: FileCryptRequest = async (url, init) => {
@@ -156,6 +159,7 @@ export async function unlockFileCryptContainer(
 				? { body: rendered, url: containerUrl }
 				: rendered;
 		if (renderedResponse.caughtDownload) {
+			await dependencies.onCaughtDownload?.(renderedResponse.caughtDownload);
 			return [
 				{
 					name:

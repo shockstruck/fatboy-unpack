@@ -233,15 +233,24 @@ describe("unlockFileCryptContainer", () => {
 				Referer: "https://datanodes.to/download/update",
 			},
 		};
+		const events: string[] = [];
 
 		await expect(
 			unlockFileCryptContainer("https://filecrypt.cc/Container/live.html", {
 				request,
-				renderContainer: async () => ({
-					body: "",
-					url: "https://datanodes.to/download/update",
-					caughtDownload,
-				}),
+				renderContainer: async () => {
+					events.push("caught");
+					return {
+						body: "",
+						url: "https://datanodes.to/download/update",
+						caughtDownload,
+					};
+				},
+				onCaughtDownload: async (download) => {
+					expect(download).toEqual(caughtDownload);
+					await new Promise((resolve) => setTimeout(resolve, 1));
+					events.push("notified");
+				},
 			}),
 		).resolves.toEqual([
 			{
@@ -250,6 +259,7 @@ describe("unlockFileCryptContainer", () => {
 				caughtDownload,
 			},
 		]);
+		expect(events).toEqual(["caught", "notified"]);
 	});
 });
 
