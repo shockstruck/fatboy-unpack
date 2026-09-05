@@ -133,9 +133,27 @@ function windowDimensions(
 	}
 }
 
+/**
+ * True once the RUNE updater's Inno log reports its install finished. RUNE runs
+ * its patch inside a custom wizard page, then hands off to Inno's own [Files]
+ * stage which logs these lines right before the Finished page appears — the
+ * reliable signal that the Finish button is now present and enabled.
+ */
+function runeInstallFinished(logFile: string): boolean {
+	try {
+		return /Installation process succeeded|Need to restart Windows/i.test(
+			fs.readFileSync(logFile, "utf-8"),
+		);
+	} catch {
+		// The installer has not written its log yet; not finished.
+		return false;
+	}
+}
+
 export async function driveRuneInstaller(
 	gameId: string,
 	ignoredWindows: Set<string>,
+	logFile: string,
 	signal: AbortSignal,
 ): Promise<boolean> {
 	if (process.platform !== "linux") return false;
@@ -167,9 +185,12 @@ export async function driveRuneInstaller(
 			execFileSync("xdotool", ["key", "--window", windowId, "alt+i"], {
 				stdio: "ignore",
 			});
-			// RUNE's custom Finish button has no reliable accelerator. Its action
-			// button stays in the same lower-right slot; clicks are harmless while
-			// disabled during scanning/patching and close the window once enabled.
+			// RUNE's Finish button has no reliable accelerator, and the wizard
+			// window never resizes between pages, so we cannot detect the Finished
+			// page from geometry. Instead wait until the Inno log reports the
+			// install done, then activate the wizard's default button (Return) and
+			// click its action-button slot each second until the window closes.
+			// Both are inert while the button is disabled during patching.
 			for (let finishAttempt = 0; finishAttempt < 1_800; finishAttempt += 1) {
 				if (
 					signal.aborted ||
@@ -180,10 +201,13 @@ export async function driveRuneInstaller(
 					return true;
 				}
 				await new Promise((resolve) => setTimeout(resolve, 1_000));
+				if (!runeInstallFinished(logFile)) continue;
 				const dimensions = windowDimensions(windowId);
 				if (!dimensions) break;
-				if (dimensions.height <= initialDimensions.height + 5) continue;
 				try {
+					execFileSync("xdotool", ["key", "--window", windowId, "Return"], {
+						stdio: "ignore",
+					});
 					execFileSync(
 						"xdotool",
 						[

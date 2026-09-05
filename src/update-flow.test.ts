@@ -87,6 +87,40 @@ describe("local update flow", () => {
 		expect(result.appliedPackages).toEqual([packageDir]);
 	});
 
+	test("validates the executable when the library records it via a mount symlink", async () => {
+		const installDir = join(root, "media", "deck", "SD", "Game");
+		fs.mkdirSync(join(installDir, "Bin"), { recursive: true });
+		fs.writeFileSync(join(installDir, "Bin", "game.exe"), "old build");
+		// SteamOS exposes /run/media/<label> as a symlink to /run/media/<user>/<label>.
+		fs.symlinkSync(join(root, "media", "deck", "SD"), join(root, "media", "SD"));
+		const aliasedBin = join(root, "media", "SD", "Game", "Bin");
+
+		const packageDir = join(root, "update");
+		fs.mkdirSync(packageDir);
+		fs.writeFileSync(join(packageDir, "data.bin"), "new build");
+
+		await applyLocalUpdatePackages({
+			packages: [packageDir],
+			installDir,
+			targetVersion: "v2",
+			currentLibraryInfo: {
+				appID: 1,
+				cwd: aliasedBin,
+				launchExecutable: join(aliasedBin, "game.exe"),
+			},
+			context: {
+				platform: "linux",
+				umuRunPath: "/not-needed-for-overlay",
+				homeDir: root,
+			},
+			log: () => {},
+		});
+
+		expect(fs.readFileSync(join(installDir, "data.bin"), "utf-8")).toBe(
+			"new build",
+		);
+	});
+
 	test("keeps downloaded packages when the update transaction fails", async () => {
 		const installDir = join(root, "Game");
 		fs.mkdirSync(installDir);

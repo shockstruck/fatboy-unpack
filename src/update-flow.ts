@@ -13,7 +13,9 @@ import {
 } from "./installer-runner";
 import { extractRepackVersion } from "./repack-store";
 import {
+	describeRuneUpdaterActivity,
 	describeUpdaterActivity,
+	runeUpdaterStepFraction,
 	trackUpdaterActivity,
 	updaterStepFraction,
 } from "./update-progress";
@@ -64,6 +66,15 @@ function readLogTail(logFile: string, lineCount = 20): string | undefined {
 		return lines.slice(-lineCount).join("\n") || undefined;
 	} catch {
 		return undefined;
+	}
+}
+
+/** Canonical path with symlinks resolved; the input itself if it doesn't exist. */
+function realPathOrSelf(path: string): string {
+	try {
+		return fs.realpathSync(path);
+	} catch {
+		return path;
 	}
 }
 
@@ -186,13 +197,27 @@ export async function applyLocalUpdatePackages(options: {
 					);
 					// A silent updater is otherwise a black box for minutes; surface
 					// its phase and written bytes from the Inno log and directory
-					// growth so the user sees a live bar and activity lines.
+					// growth so the user sees a live bar and activity lines. RUNE
+					// writes nothing parseable to the log, so it estimates from
+					// directory growth and elapsed time instead of the Inno phase.
+					const isRune = staged.installerFamily === "rune";
+					let lastActivityLine = "";
 					const stopTracking = trackUpdaterActivity(
 						logFile,
 						targetDir,
 						(activity) => {
-							log(describeUpdaterActivity(stepLabel, activity));
-							onStepProgress?.(updaterStepFraction(activity));
+							const line = isRune
+								? describeRuneUpdaterActivity(stepLabel, activity)
+								: describeUpdaterActivity(stepLabel, activity);
+							if (line !== lastActivityLine) {
+								log(line);
+								lastActivityLine = line;
+							}
+							onStepProgress?.(
+								isRune
+									? runeUpdaterStepFraction(activity)
+									: updaterStepFraction(activity),
+							);
 						},
 					);
 					// The updaters end by launching RapidCRC's verification GUI and
@@ -217,6 +242,7 @@ export async function applyLocalUpdatePackages(options: {
 								? driveRuneInstaller(
 										umu.gameId,
 										existingWindows,
+										logFile,
 										runeAutomation.signal,
 									)
 								: Promise.resolve(false);
@@ -253,12 +279,18 @@ export async function applyLocalUpdatePackages(options: {
 			});
 		}
 
-		const absoluteLaunchExecutable = isAbsolute(
-			currentLibraryInfo.launchExecutable,
-		)
-			? currentLibraryInfo.launchExecutable
-			: join(currentLibraryInfo.cwd, currentLibraryInfo.launchExecutable);
-		const launchExecutable = relative(installDir, absoluteLaunchExecutable);
+		// OGI may record the executable through a different spelling of the same
+		// mount (e.g. the /run/media/<label> symlink vs /run/media/<user>/<label>
+		// on SteamOS); resolve symlinks on both sides before relating them.
+		const absoluteLaunchExecutable = realPathOrSelf(
+			isAbsolute(currentLibraryInfo.launchExecutable)
+				? currentLibraryInfo.launchExecutable
+				: join(currentLibraryInfo.cwd, currentLibraryInfo.launchExecutable),
+		);
+		const launchExecutable = relative(
+			realPathOrSelf(installDir),
+			absoluteLaunchExecutable,
+		);
 		const result = await applyUpdateTransaction({
 			installDir,
 			launchExecutable:

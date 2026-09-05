@@ -16,6 +16,8 @@ export type UpdaterActivity = {
 	filesInstalled: number;
 	/** How much the target directory has grown since the step began. */
 	bytesWritten: number;
+	/** Milliseconds since the step began; RUNE's only time-based signal. */
+	elapsedMs: number;
 };
 
 /** Phase and file count from the updater's Inno log content. */
@@ -37,6 +39,9 @@ export function parseUpdaterLog(
 // installed 25 files or patched 2 GiB shows half of its phase's band.
 const INSTALL_COUNT_HALFWAY = 25;
 const PATCH_BYTES_HALFWAY = 2 * 1024 ** 3;
+// RUNE has no byte denominator either, so its estimate also leans on wall time:
+// three minutes in shows half of the band.
+const RUNE_TIME_HALFWAY_MS = 3 * 60_000;
 
 /**
  * Maps activity to a 0..1 step fraction. Phases own fixed bands (installing
@@ -64,6 +69,36 @@ export function updaterStepFraction(activity: UpdaterActivity): number {
 		case "verifying":
 			return 0.97;
 	}
+}
+
+/**
+ * 0..1 step fraction for a RUNE updater. RUNE patches inside a custom wizard
+ * page that writes nothing parseable to the Inno log until it finishes, so the
+ * Inno phase is useless here. Estimate from whichever of directory growth or
+ * elapsed time is further along, saturating below 1 — the step completes when
+ * the installer exits, not when this estimate does. Both inputs are monotone,
+ * so their maximum is too, and the bar never freezes at one value.
+ */
+export function runeUpdaterStepFraction(activity: UpdaterActivity): number {
+	const byGrowth =
+		activity.bytesWritten / (activity.bytesWritten + PATCH_BYTES_HALFWAY);
+	const byTime =
+		activity.elapsedMs / (activity.elapsedMs + RUNE_TIME_HALFWAY_MS);
+	return 0.05 + 0.9 * Math.max(byGrowth, byTime);
+}
+
+/** One-line RUNE activity description for the OGI log pane. */
+export function describeRuneUpdaterActivity(
+	label: string,
+	activity: UpdaterActivity,
+): string {
+	if (activity.bytesWritten <= 0) {
+		return `Update ${label}: starting installer...`;
+	}
+	const gib = Math.floor(activity.bytesWritten / 1024 ** 3);
+	return gib >= 1
+		? `Update ${label}: patching game files (${gib} GiB written)...`
+		: `Update ${label}: patching game files...`;
 }
 
 /**
@@ -100,6 +135,7 @@ export function trackUpdaterActivity(
 	onActivity: (activity: UpdaterActivity) => void,
 	intervalMs = 5_000,
 ): () => void {
+	const startedAt = Date.now();
 	let baselineSize: number | undefined;
 	let bytesWritten = 0;
 	let lastKey = "";
@@ -114,10 +150,15 @@ export function trackUpdaterActivity(
 		const size = directorySize(targetDir);
 		baselineSize ??= size;
 		bytesWritten = Math.max(bytesWritten, size - baselineSize);
-		const key = `${phase}:${filesInstalled}:${Math.floor(bytesWritten / (256 * 1024 ** 2))}`;
+		const elapsedMs = Date.now() - startedAt;
+		// The 15s time bucket keeps RUNE's time-based estimate advancing even
+		// while the log and directory size sit still during in-place patching.
+		const key = `${phase}:${filesInstalled}:${Math.floor(
+			bytesWritten / (256 * 1024 ** 2),
+		)}:${Math.floor(elapsedMs / 15_000)}`;
 		if (key === lastKey) return;
 		lastKey = key;
-		onActivity({ phase, filesInstalled, bytesWritten });
+		onActivity({ phase, filesInstalled, bytesWritten, elapsedMs });
 	};
 	report();
 	const timer = setInterval(report, intervalMs);

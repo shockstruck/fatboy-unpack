@@ -46,11 +46,14 @@ export type InstallProgressUpdate = {
 const FLAT_POLLS_FOR_VERIFY = 6;
 
 /**
- * Polls dir and reports its size as a fraction of expectedBytes, plus a phase:
- * once growth stalls for a sustained stretch the install is presumed to be in
- * its CRC-verification tail and the phase flips to "verifying" (and back, if
- * writing resumes). Progress is monotonic and capped at 99; the caller reports
- * 100 only when the installer process exits successfully.
+ * Polls dir and reports how much it has grown since the first poll as a
+ * fraction of expectedBytes, plus a phase: once growth stalls for a sustained
+ * stretch the install is presumed to be in its CRC-verification tail and the
+ * phase flips to "verifying" (and back, if writing resumes). Growth, not
+ * absolute size, because the install root may already hold the downloaded
+ * repack (OGI's hash staging folder) or a previous installation. Progress is
+ * monotonic and capped at 99; the caller reports 100 only when the installer
+ * process exits successfully.
  */
 export function trackInstallProgress(
 	dir: string,
@@ -58,25 +61,28 @@ export function trackInstallProgress(
 	onUpdate: (update: InstallProgressUpdate) => void,
 	intervalMs = 5_000,
 ): () => void {
+	let baselineSize: number | undefined;
 	let lastProgress = -1;
-	let lastSize = -1;
+	let lastWritten = -1;
 	let flatPolls = 0;
 	let phase: InstallPhase = "extracting";
 	const report = (): void => {
 		const size = directorySize(dir);
-		if (size > lastSize) {
-			lastSize = size;
+		baselineSize ??= size;
+		const written = Math.max(size - baselineSize, 0);
+		if (written > lastWritten) {
+			lastWritten = written;
 			flatPolls = 0;
 		} else {
 			flatPolls += 1;
 		}
 		const nextPhase: InstallPhase =
-			flatPolls >= FLAT_POLLS_FOR_VERIFY && lastSize > 0
+			flatPolls >= FLAT_POLLS_FOR_VERIFY && lastWritten > 0
 				? "verifying"
 				: "extracting";
 		const progress = Math.min(
 			99,
-			Math.floor((size / Math.max(expectedBytes, 1)) * 100),
+			Math.floor((written / Math.max(expectedBytes, 1)) * 100),
 		);
 		if (progress > lastProgress || nextPhase !== phase) {
 			lastProgress = Math.max(lastProgress, progress);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	parseUpdaterLog,
+	runeUpdaterStepFraction,
 	updaterStepFraction,
 	type UpdaterActivity,
 } from "./update-progress";
@@ -27,18 +28,63 @@ describe("updater progress", () => {
 
 	test("step fraction is monotone across phases and saturates within bands", () => {
 		const points: UpdaterActivity[] = [
-			{ phase: "starting", filesInstalled: 0, bytesWritten: 0 },
-			{ phase: "installing", filesInstalled: 5, bytesWritten: 0 },
-			{ phase: "installing", filesInstalled: 50, bytesWritten: 0 },
-			{ phase: "patching", filesInstalled: 50, bytesWritten: 0 },
-			{ phase: "patching", filesInstalled: 50, bytesWritten: 4 * 1024 ** 3 },
-			{ phase: "patching", filesInstalled: 50, bytesWritten: 40 * 1024 ** 3 },
-			{ phase: "verifying", filesInstalled: 50, bytesWritten: 40 * 1024 ** 3 },
+			{ phase: "starting", filesInstalled: 0, bytesWritten: 0, elapsedMs: 0 },
+			{ phase: "installing", filesInstalled: 5, bytesWritten: 0, elapsedMs: 0 },
+			{ phase: "installing", filesInstalled: 50, bytesWritten: 0, elapsedMs: 0 },
+			{ phase: "patching", filesInstalled: 50, bytesWritten: 0, elapsedMs: 0 },
+			{
+				phase: "patching",
+				filesInstalled: 50,
+				bytesWritten: 4 * 1024 ** 3,
+				elapsedMs: 0,
+			},
+			{
+				phase: "patching",
+				filesInstalled: 50,
+				bytesWritten: 40 * 1024 ** 3,
+				elapsedMs: 0,
+			},
+			{
+				phase: "verifying",
+				filesInstalled: 50,
+				bytesWritten: 40 * 1024 ** 3,
+				elapsedMs: 0,
+			},
 		];
 		const fractions = points.map(updaterStepFraction);
 		for (let i = 1; i < fractions.length; i++) {
 			expect(fractions[i]).toBeGreaterThan(fractions[i - 1]);
 		}
 		expect(fractions.at(-1)!).toBeLessThan(1);
+	});
+
+	test("RUNE fraction advances on time or growth and never freezes or reaches 1", () => {
+		// A RUNE step whose directory never grows still moves via elapsed time.
+		const overTime: UpdaterActivity[] = [
+			{ phase: "starting", filesInstalled: 0, bytesWritten: 0, elapsedMs: 0 },
+			{ phase: "starting", filesInstalled: 0, bytesWritten: 0, elapsedMs: 30_000 },
+			{
+				phase: "starting",
+				filesInstalled: 0,
+				bytesWritten: 0,
+				elapsedMs: 5 * 60_000,
+			},
+		];
+		const timeFractions = overTime.map(runeUpdaterStepFraction);
+		expect(timeFractions[0]).toBeGreaterThan(0.02);
+		for (let i = 1; i < timeFractions.length; i++) {
+			expect(timeFractions[i]).toBeGreaterThan(timeFractions[i - 1]);
+		}
+		expect(timeFractions.at(-1)!).toBeLessThan(1);
+
+		// Directory growth alone also advances it beyond the time-only estimate.
+		expect(
+			runeUpdaterStepFraction({
+				phase: "starting",
+				filesInstalled: 0,
+				bytesWritten: 8 * 1024 ** 3,
+				elapsedMs: 0,
+			}),
+		).toBeGreaterThan(timeFractions[0]);
 	});
 });
