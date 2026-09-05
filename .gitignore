@@ -6,5 +6,6 @@ steam-apps.json
 time-since-scrape.txt
 *.lockb
 ddosguard.json
+installed-repacks/
 
 .DS_Store
