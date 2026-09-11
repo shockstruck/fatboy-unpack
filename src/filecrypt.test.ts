@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	isFileCryptContainerPage,
 	parseFileCryptContainer,
 	type FileCryptRequest,
 	unlockFileCryptContainer,
@@ -46,6 +47,25 @@ describe("parseFileCryptContainer", () => {
 		expect(parseFileCryptContainer(html)).toEqual({
 			linkIds: ["encoded-link-id"],
 		});
+	});
+});
+
+describe("isFileCryptContainerPage", () => {
+	test("allows container reloads but rejects FileCrypt link takeovers", () => {
+		const container = "https://filecrypt.cc/Container/FC305BE578.html";
+
+		expect(isFileCryptContainerPage(`${container}?verified=1`, container)).toBe(
+			true,
+		);
+		expect(
+			isFileCryptContainerPage(
+				"https://filecrypt.cc/Link/3456B974D1.html",
+				container,
+			),
+		).toBe(false);
+		expect(
+			isFileCryptContainerPage("https://example.com/advert", container),
+		).toBe(false);
 	});
 });
 

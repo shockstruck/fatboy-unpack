@@ -26,6 +26,11 @@ export type InstalledRepack = {
 	installedVersion: string;
 	/** Version advertised by the last check-for-updates; setup must resolve exactly this. */
 	pendingUpdateVersion?: string;
+	/** Last OGI update check, tied to the installed version it evaluated. */
+	lastUpdateCheck?: {
+		checkedVersion: string;
+		availableVersion?: string;
+	};
 	/** Previous installation retained after a committed update, removed after a successful launch. */
 	pendingBackupDir?: string;
 	appliedUpdates: AppliedUpdate[];

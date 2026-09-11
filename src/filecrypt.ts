@@ -145,6 +145,22 @@ export function isExternalFileCryptDestination(
 	}
 }
 
+export function isFileCryptContainerPage(
+	url: string,
+	containerUrl: string,
+): boolean {
+	try {
+		const candidate = new URL(url);
+		const container = new URL(containerUrl);
+		return (
+			candidate.origin === container.origin &&
+			candidate.pathname === container.pathname
+		);
+	} catch {
+		return false;
+	}
+}
+
 export async function unlockFileCryptContainer(
 	containerUrl: string,
 	dependencies: FileCryptDependencies,

@@ -13,6 +13,25 @@ export type DownloadedUpdateGroup = {
 	files: string[];
 };
 
+export type FitGirlUpdateAvailability = {
+	checkedVersion: string;
+	availableVersion?: string;
+};
+
+export function trackedFitGirlUpdateVersion(
+	availability: FitGirlUpdateAvailability | undefined,
+	currentVersion: string,
+): string | undefined {
+	if (availability?.checkedVersion !== currentVersion) return undefined;
+	if (
+		!availability.availableVersion ||
+		availability.availableVersion === currentVersion
+	) {
+		return undefined;
+	}
+	return availability.availableVersion;
+}
+
 function normalizedTitle(value: string): string {
 	return value
 		.normalize("NFKD")

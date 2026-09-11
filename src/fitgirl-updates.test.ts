@@ -3,6 +3,7 @@ import {
 	inferUpdateTargetVersion,
 	parseFitGirlUpdates,
 	resolveDownloadedUpdatePackages,
+	trackedFitGirlUpdateVersion,
 } from "./fitgirl-updates";
 
 describe("parseFitGirlUpdates", () => {
@@ -59,5 +60,25 @@ describe("inferUpdateTargetVersion", () => {
 				"Slay.the.Spire.2.Update.Build.23811903-RUNE.rar",
 			),
 		).toBe("23811903");
+	});
+});
+
+describe("trackedFitGirlUpdateVersion", () => {
+	test("only exposes packages after a matching positive update check", () => {
+		expect(
+			trackedFitGirlUpdateVersion(
+				{ checkedVersion: "1.0", availableVersion: "1.1" },
+				"1.0",
+			),
+		).toBe("1.1");
+		expect(
+			trackedFitGirlUpdateVersion({ checkedVersion: "1.0" }, "1.0"),
+		).toBeUndefined();
+		expect(
+			trackedFitGirlUpdateVersion(
+				{ checkedVersion: "1.0", availableVersion: "1.1" },
+				"1.1",
+			),
+		).toBeUndefined();
 	});
 });

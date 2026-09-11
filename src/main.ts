@@ -37,10 +37,12 @@ import { type GameInfo, parseGameMetadataHtml } from "./fitgirl-metadata";
 import {
 	type DownloadedUpdateGroup,
 	FITGIRL_UPDATES_URL,
+	type FitGirlUpdateAvailability,
 	type FitGirlUpdate,
 	inferUpdateTargetVersion,
 	parseFitGirlUpdates,
 	resolveDownloadedUpdatePackages,
+	trackedFitGirlUpdateVersion,
 } from "./fitgirl-updates";
 import { findBinManifest, verifyRepackBins } from "./bin-verify";
 import { resolveServiceFromUrl } from "./matcher";
@@ -121,6 +123,7 @@ const addon = new OGIAddon({
 
 let scrapedGames: Game[] | undefined;
 const pendingUpdateVersions = new Map<number, string>();
+const fitGirlUpdateAvailability = new Map<number, FitGirlUpdateAvailability>();
 // Update-package downloads queued at request time (magnet flow) that setup
 // must wait on before applying the chain. Keyed by appID.
 const pendingUpdateDownloads = new Map<number, AddonDownload>();
@@ -184,12 +187,15 @@ addon.on("search", (data, event) => {
 	if (data.for === "update") {
 		const record = loadInstalledRepack(appID);
 		event.defer(async () => {
-			const targetVersion =
-				pendingUpdateVersions.get(appID) ??
-				record?.pendingUpdateVersion ??
-				(await addon.getAppDetails(appID, storefront))?.latestVersion ??
-				"unknown";
+			const targetVersion = trackedFitGirlUpdateVersion(
+				fitGirlUpdateAvailability.get(appID) ?? record?.lastUpdateCheck,
+				data.libraryInfo.version,
+			);
 			const results: Parameters<typeof event.resolve>[0] = [];
+			if (!targetVersion) {
+				event.resolve(results);
+				return;
+			}
 			try {
 				const response = await axiosGetWithDDOSGuard(
 					addon,
@@ -207,10 +213,7 @@ addon.on("search", (data, event) => {
 						manifest: {
 							service: "filecrypt-update",
 							updates,
-							targetVersion:
-								targetVersion === "unknown"
-									? inferUpdateTargetVersion(updates.at(-1)?.name)
-									: targetVersion,
+							targetVersion,
 						},
 						clearOldFilesBeforeUpdate: false,
 					});
@@ -381,15 +384,33 @@ addon.on(
 	({ appID, storefront, currentVersion }, event) => {
 		event.defer(async () => {
 			const record = loadInstalledRepack(appID);
+			const finish = (availableVersion?: string): void => {
+				const availability = {
+					checkedVersion: currentVersion,
+					...(availableVersion ? { availableVersion } : {}),
+				};
+				fitGirlUpdateAvailability.set(appID, availability);
+				if (availableVersion) {
+					pendingUpdateVersions.set(appID, availableVersion);
+				} else {
+					pendingUpdateVersions.delete(appID);
+				}
+				if (record) {
+					record.lastUpdateCheck = availability;
+					record.pendingUpdateVersion = availableVersion;
+					saveInstalledRepack(record);
+				}
+				if (availableVersion) {
+					event.resolve({ available: true, version: availableVersion });
+				} else {
+					event.resolve({ available: false });
+				}
+			};
 			if (
 				record?.pendingUpdateVersion &&
 				record.pendingUpdateVersion !== currentVersion
 			) {
-				pendingUpdateVersions.set(appID, record.pendingUpdateVersion);
-				event.resolve({
-					available: true,
-					version: record.pendingUpdateVersion,
-				});
+				finish(record.pendingUpdateVersion);
 				return;
 			}
 			if (!record?.fitgirlUrl) {
@@ -398,11 +419,10 @@ addon.on(
 				const latestVersion = (await addon.getAppDetails(appID, storefront))
 					?.latestVersion;
 				if (!latestVersion || latestVersion === currentVersion) {
-					event.resolve({ available: false });
+					finish();
 					return;
 				}
-				pendingUpdateVersions.set(appID, latestVersion);
-				event.resolve({ available: true, version: latestVersion });
+				finish(latestVersion);
 				return;
 			}
 
@@ -420,7 +440,7 @@ addon.on(
 				latestVersion = extractRepackVersion(title);
 			} catch (err) {
 				console.log(`check-for-updates: failed to fetch repack page: ${err}`);
-				event.resolve({ available: false });
+				finish();
 				return;
 			}
 
@@ -428,14 +448,11 @@ addon.on(
 			// version signals an update, never any ordering of the strings.
 			const installedVersion = record.installedVersion ?? currentVersion;
 			if (latestVersion === "unknown" || latestVersion === installedVersion) {
-				event.resolve({ available: false });
+				finish();
 				return;
 			}
 
-			record.pendingUpdateVersion = latestVersion;
-			saveInstalledRepack(record);
-			pendingUpdateVersions.set(appID, latestVersion);
-			event.resolve({ available: true, version: latestVersion });
+			finish(latestVersion);
 		});
 	},
 );
@@ -831,6 +848,7 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 			if (record) {
 				record.installedVersion = targetVersion;
 				record.pendingUpdateVersion = undefined;
+				record.lastUpdateCheck = { checkedVersion: targetVersion };
 				record.pendingBackupDir = backupDir;
 				record.appliedUpdates.push({
 					version: targetVersion,
@@ -839,6 +857,10 @@ function runUpdateSetup(data: UpdateSetupData, event: SetupEvent): void {
 				});
 				saveInstalledRepack(record);
 			}
+			pendingUpdateVersions.delete(appID);
+			fitGirlUpdateAvailability.set(appID, {
+				checkedVersion: targetVersion,
+			});
 		} catch (err) {
 			event.fail(
 				createBackup
