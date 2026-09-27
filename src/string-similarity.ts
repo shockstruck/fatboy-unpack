@@ -330,6 +330,20 @@ function scoreGame(searchAliases: TitleAlias[], game: Game): number {
   return bestScore;
 }
 
+/**
+ * Scores the similarity of two plain title strings, reusing the same
+ * normalization, alias and scoring machinery as {@link findBestGameMatch}.
+ * Unlike that function, this takes no threshold and no search tool: it
+ * always returns a raw 0-1 score for exactly the two strings given.
+ */
+export function scoreTitleSimilarity(left: string, right: string): number {
+  const leftAliases = titleAliases({ name: left, url: "" });
+  if (leftAliases.length === 0) {
+    return 0;
+  }
+  return scoreGame(leftAliases, { name: right, url: "" });
+}
+
 function isIgnoredGame(game: Game, options?: MatchOptions): boolean {
   if (options?.ignoreHypervisor && /\bhypervisor\b/i.test(game.name)) {
     return true;
