@@ -33,6 +33,12 @@ import {
   makeSetupINF,
   toWineZPath,
 } from "./wine-setup";
+import {
+  candidateAbsolutePath,
+  resolveExecutableChoice,
+  scanExecutables,
+  scoreCandidates,
+} from "./executable-detection";
 
 const UMU_BIN = join(
   process.env.HOME! ?? "",
@@ -1071,83 +1077,62 @@ addon.on(
         }
       } // end of !continueFlag else block
 
-      // Function to find executable files in a directory
-      function findExecutableFiles(directory: string): string[] {
-        if (!fs.existsSync(directory)) {
-          return [];
-        }
-
-        const files = fs.readdirSync(directory);
-        const executableExtensions = [".exe", ".bat", ".cmd"];
-        const excludePatterns = [
-          /unitycrash/i,
-          /crash.*report/i,
-          /error.*report/i,
-          /setup/i,
-          /install/i,
-          /uninstall/i,
-          /redist/i,
-          /vcredist/i,
-          /directx/i,
-          /_commonredist/i,
-          /updater/i,
-          /launcher.*update/i,
-          /^steam_/i,
-        ];
-
-        return files
-          .filter((file) => {
-            const filePath = join(directory, file);
-            const stats = fs.statSync(filePath);
-
-            // Skip directories
-            if (stats.isDirectory()) {
-              return false;
-            }
-
-            // Check if it has an executable extension
-            const hasExeExtension = executableExtensions.some((ext) =>
-              file.toLowerCase().endsWith(ext),
-            );
-
-            if (!hasExeExtension) {
-              return false;
-            }
-
-            // Exclude unwanted files
-            const shouldExclude = excludePatterns.some((pattern) =>
-              pattern.test(file),
-            );
-
-            return !shouldExclude;
-          })
-          .map((file) => join(directory, file));
-      }
-
       // okay installed!
 
       // Try to auto-detect the executable first
-      const potentialExecutables = findExecutableFiles(installDir);
+      const executableCandidates = await scanExecutables(installDir);
+      const scoredExecutables = scoreCandidates(
+        executableCandidates,
+        name,
+        basename(installDir),
+      );
+      const executableChoice = resolveExecutableChoice(scoredExecutables);
+
       let gameExecutable: { workingDir: string; gameExecutable: string };
 
-      if (potentialExecutables.length === 1) {
-        // Auto-select the single executable found
-        event.log(`Auto-detected game executable: ${potentialExecutables[0]}`);
+      if (executableChoice.autoPick) {
+        const absPath = candidateAbsolutePath(
+          installDir,
+          executableChoice.autoPick.relPath,
+        );
+        event.log(`Auto-detected game executable: ${absPath}`);
         gameExecutable = {
-          workingDir: installDir,
-          gameExecutable: potentialExecutables[0],
+          workingDir: dirname(absPath),
+          gameExecutable: absPath,
+        };
+      } else if (executableChoice.ranked.length > 0) {
+        const rankedPaths = executableChoice.ranked.map((candidate) =>
+          candidateAbsolutePath(installDir, candidate.relPath),
+        );
+        event.log(
+          `Found ${rankedPaths.length} potential executables. Please select manually.`,
+        );
+
+        const picked = (await event.askForInput(
+          "FitGirl Repacks",
+          "Help us help you.",
+          new ConfigurationBuilder().addStringOption((option) =>
+            option
+              .setName("gameExecutable")
+              .setDisplayName("Game Executable")
+              .setDescription(
+                `Select the game executable, ranked by best match for "${name}".`,
+              )
+              .setInputType("file")
+              .setAllowedValues(rankedPaths)
+              .setDefaultValue(rankedPaths[0]),
+          ),
+        )) as { gameExecutable: string };
+
+        gameExecutable = {
+          workingDir: dirname(picked.gameExecutable),
+          gameExecutable: picked.gameExecutable,
         };
       } else {
         // Ask user to select manually
-        if (potentialExecutables.length === 0) {
-          event.log(
-            "No executable files found automatically. Please select manually.",
-          );
-        } else {
-          event.log(
-            `Found ${potentialExecutables.length} potential executables. Please select manually.`,
-          );
-        }
+        event.log(
+          "No executable files found automatically. Please select manually.",
+        );
 
         gameExecutable = (await event.askForInput(
           "FitGirl Repacks",
