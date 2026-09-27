@@ -27,6 +27,13 @@ import {
 import { findBestGameMatch, Game } from "./string-similarity";
 import { fileURLToPath } from "url";
 import {
+  buildSilentSetupArgs,
+  decideSetupBranch,
+  describeInnoExitCode,
+  makeSetupINF,
+  toWineZPath,
+} from "./wine-setup";
+import {
   candidateAbsolutePath,
   resolveExecutableChoice,
   scanExecutables,
@@ -88,6 +95,15 @@ addon.on("configure", (config) =>
         .setDisplayName("Ignore HYPERVISOR Cracks on Linux")
         .setDescription(
           "Do not show FitGirl entries with HYPERVISOR in the title when running on Linux.",
+        )
+        .setDefaultValue(true),
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("automateWineSetup")
+        .setDisplayName("Automate Setup under Wine")
+        .setDescription(
+          "On Linux or macOS, run FitGirl's setup unattended via Wine with no prompts after download. Disable to use the manual setup flow instead.",
         )
         .setDefaultValue(true),
     )
@@ -287,6 +303,173 @@ function spawnAndHook(
     stderr,
     stdin: childProcess.stdin,
   };
+}
+
+// Deletes everything in `path` except the 'INSTALL HERE' directory, then
+// moves 'INSTALL HERE' contents (or its single nested folder) up into
+// `installDir`. Shared by the manual Wine flow and the unattended one, both
+// of which reach this point only after the installer has finished writing
+// into 'INSTALL HERE'.
+function finalizeInstallHere(
+  path: string,
+  installDir: string,
+  event: { log: (msg: string) => void },
+): void {
+  event.log(
+    `Deleting all other files and folders in the path except the 'INSTALL HERE' directory`,
+  );
+  fs.readdirSync(path).forEach((file) => {
+    if (file !== "INSTALL HERE") {
+      const fullPath = join(path, file);
+      const stat = fs.lstatSync(fullPath);
+      if (stat.isDirectory()) {
+        fs.rmSync(fullPath, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(fullPath);
+      }
+    }
+  });
+  event.log("Deleted.");
+
+  // move the contents of 'INSTALL HERE' directory to the path
+  const installHereDir = join(installDir, "INSTALL HERE");
+
+  if (fs.existsSync(installHereDir)) {
+    // Check if there's content in INSTALL HERE
+    const installHereFiles = fs.readdirSync(installHereDir);
+
+    if (installHereFiles.length > 0) {
+      // If there's a single nested folder, move its contents up
+      if (
+        installHereFiles.length === 1 &&
+        fs.statSync(join(installHereDir, installHereFiles[0])).isDirectory()
+      ) {
+        const nestedDir = join(installHereDir, installHereFiles[0]);
+        const nestedFiles = fs.readdirSync(nestedDir);
+
+        // Move all files from the nested directory to the parent path
+        for (const file of nestedFiles) {
+          const sourcePath = join(nestedDir, file);
+          const destPath = join(installDir, file);
+          fs.renameSync(sourcePath, destPath);
+        }
+        event.log(
+          `Moved contents from nested directory '${installHereFiles[0]}' to ${installDir}`,
+        );
+      } else {
+        // Move all files from INSTALL HERE to the parent path
+        for (const file of installHereFiles) {
+          const sourcePath = join(installHereDir, file);
+          const destPath = join(installDir, file);
+          fs.renameSync(sourcePath, destPath);
+        }
+        event.log(
+          `Moved contents from 'INSTALL HERE' directory to ${installDir}`,
+        );
+      }
+
+      // then, delete the 'INSTALL HERE' directory
+      fs.rmSync(installHereDir, { recursive: true, force: true });
+    }
+
+    // Remove the now-empty INSTALL HERE directory
+    fs.rmSync(installHereDir, { recursive: true, force: true });
+  }
+}
+
+type UnattendedWineSetupOptions = {
+  path: string;
+  installDir: string;
+  addBonus: boolean;
+  setupExePath: string;
+  winePrefixDir: string;
+  event: {
+    log: (msg: string) => void;
+    fail: (msg: string) => void;
+  };
+};
+
+// Runs FitGirl's Inno Setup installer unattended via Wine, targeting the
+// 'INSTALL HERE' staging directory. Returns whether the install succeeded;
+// on any failure it deletes nothing, leaving the repack directory as-is for
+// inspection or retry.
+async function runUnattendedWineSetup({
+  path,
+  installDir,
+  addBonus,
+  setupExePath,
+  winePrefixDir,
+  event,
+}: UnattendedWineSetupOptions): Promise<boolean> {
+  const installHereDir = join(installDir, "INSTALL HERE");
+  const setupINF = makeSetupINF(toWineZPath(installHereDir), addBonus);
+  const setupINFPath = join(path, "fatboy-setup.inf");
+  const setupLogPath = join(path, "fatboy-setup.log");
+  fs.writeFileSync(setupINFPath, setupINF);
+  event.log(`Setup INI file created at ${setupINFPath}`);
+
+  const args = buildSilentSetupArgs({
+    infWinPath: toWineZPath(setupINFPath),
+    logWinPath: toWineZPath(setupLogPath),
+  });
+
+  event.log("Running unattended FitGirl setup via Wine...");
+
+  let exitCode: number | undefined;
+  let spawnError: Error | undefined;
+  try {
+    exitCode = await new Promise<number>((resolveExit, rejectExit) => {
+      spawnAndHook(
+        {
+          cwd: path,
+          env: {
+            ...process.env,
+            WINEPREFIX: winePrefixDir,
+          } as Record<string, string>,
+          stdout: (data: string) => {
+            event.log(data);
+          },
+          stderr: (data: string) => {
+            event.log(data);
+          },
+          onClose: (code: number) => {
+            resolveExit(code);
+          },
+          onError: (err: Error) => {
+            rejectExit(err);
+          },
+        },
+        UMU_BIN,
+        [setupExePath, ...args],
+      );
+    });
+  } catch (err) {
+    spawnError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  if (spawnError) {
+    event.fail(
+      `Error launching unattended setup via Wine: ${spawnError.message}. Log: ${setupLogPath}`,
+    );
+    return false;
+  }
+
+  if (exitCode !== 0) {
+    event.fail(`${describeInnoExitCode(exitCode as number)} Log: ${setupLogPath}`);
+    return false;
+  }
+
+  if (
+    !fs.existsSync(installHereDir) ||
+    fs.readdirSync(installHereDir).length === 0
+  ) {
+    event.fail(
+      `Setup reported success but "INSTALL HERE" is empty. Nothing was deleted. Log: ${setupLogPath}`,
+    );
+    return false;
+  }
+
+  return true;
 }
 
 type SetupManifest = {
@@ -489,10 +672,10 @@ addon.on(
       }
 
       let continueFlag = false;
-      // if the INSTALL_HERE folder already exists, and it has content in it, ask the user if they already completed the download or want to retry
+      // if the INSTALL HERE folder already exists, and it has content in it, ask the user if they already completed the download or want to retry
       if (
-        fs.existsSync(join(path, "INSTALL_HERE")) &&
-        fs.readdirSync(join(path, "INSTALL_HERE")).length > 0
+        fs.existsSync(join(path, "INSTALL HERE")) &&
+        fs.readdirSync(join(path, "INSTALL HERE")).length > 0
       ) {
         const result = await event.askForInput(
           "Installation Exists",
@@ -595,6 +778,13 @@ addon.on(
         const homeDir = process.env.HOME || process.env.USERPROFILE || "~/";
         const winePrefixDir = join(homeDir, ".wine-fitgirl");
         const runsSetupViaWine = process.platform !== "win32";
+        const automateWineSetup = runsSetupViaWine
+          ? addon.config.getBooleanValue("automateWineSetup")
+          : false;
+        const setupBranch = decideSetupBranch(
+          process.platform,
+          automateWineSetup,
+        );
 
         const setupExePath = await resolveFitgirlSetupExe(
           path,
@@ -653,6 +843,13 @@ addon.on(
             installDir: string;
             addBonus: boolean;
           };
+        } else if (setupBranch === "silent") {
+          // Unattended: skip every prompt and install straight into `path`.
+          input = {
+            automate: false,
+            installDir: path,
+            addBonus: false,
+          };
         } else {
           const screen = new ConfigurationBuilder().addStringOption((option) =>
             option
@@ -708,7 +905,20 @@ addon.on(
           fs.mkdirSync(join(installDir, "INSTALL HERE"), { recursive: true });
         }
 
-        if (input.automate) {
+        if (setupBranch === "silent") {
+          const succeeded = await runUnattendedWineSetup({
+            path,
+            installDir,
+            addBonus,
+            setupExePath,
+            winePrefixDir,
+            event,
+          });
+          if (!succeeded) {
+            return;
+          }
+          finalizeInstallHere(path, installDir, event);
+        } else if (input.automate) {
           const setupINFPath = join(path, "fatboy-setup.inf");
           fs.writeFileSync(setupINFPath, setupINF);
           event.log(`Setup INI file created at ${setupINFPath}`);
@@ -861,69 +1071,7 @@ addon.on(
                 return;
               }
 
-              // delete all other files and folders in the path except the 'INSTALL HERE' directory
-              event.log(
-                `Deleting all other files and folders in the path except the 'INSTALL HERE' directory`,
-              );
-              fs.readdirSync(path).forEach((file) => {
-                if (file !== "INSTALL HERE") {
-                  const fullPath = join(path, file);
-                  const stat = fs.lstatSync(fullPath);
-                  if (stat.isDirectory()) {
-                    fs.rmSync(fullPath, { recursive: true, force: true });
-                  } else {
-                    fs.unlinkSync(fullPath);
-                  }
-                }
-              });
-              event.log("Deleted.");
-
-              // move the contents of 'INSTALL HERE' directory to the path
-              const installHereDir = join(installDir, "INSTALL HERE");
-
-              if (fs.existsSync(installHereDir)) {
-                // Check if there's content in INSTALL HERE
-                const installHereFiles = fs.readdirSync(installHereDir);
-
-                if (installHereFiles.length > 0) {
-                  // If there's a single nested folder, move its contents up
-                  if (
-                    installHereFiles.length === 1 &&
-                    fs
-                      .statSync(join(installHereDir, installHereFiles[0]))
-                      .isDirectory()
-                  ) {
-                    const nestedDir = join(installHereDir, installHereFiles[0]);
-                    const nestedFiles = fs.readdirSync(nestedDir);
-
-                    // Move all files from the nested directory to the parent path
-                    for (const file of nestedFiles) {
-                      const sourcePath = join(nestedDir, file);
-                      const destPath = join(installDir, file);
-                      fs.renameSync(sourcePath, destPath);
-                    }
-                    event.log(
-                      `Moved contents from nested directory '${installHereFiles[0]}' to ${installDir}`,
-                    );
-                  } else {
-                    // Move all files from INSTALL HERE to the parent path
-                    for (const file of installHereFiles) {
-                      const sourcePath = join(installHereDir, file);
-                      const destPath = join(installDir, file);
-                      fs.renameSync(sourcePath, destPath);
-                    }
-                    event.log(
-                      `Moved contents from 'INSTALL HERE' directory to ${installDir}`,
-                    );
-                  }
-
-                  // then, delete the 'INSTALL HERE' directory
-                  fs.rmSync(installHereDir, { recursive: true, force: true });
-                }
-
-                // Remove the now-empty INSTALL HERE directory
-                fs.rmSync(installHereDir, { recursive: true, force: true });
-              }
+              finalizeInstallHere(path, installDir, event);
             }
           }
         }
@@ -1417,15 +1565,4 @@ export async function scrapeGameMetadata(
   fs.writeFileSync(cachePath, JSON.stringify(data, null, 2));
 
   return data;
-}
-
-function makeSetupINF(installDir: string, addBonus: boolean) {
-  return `
-[Setup]
-Lang=en
-Dir=${installDir}
-SetupType=custom
-Components=text${addBonus ? ",bonus" : ""}
-Tasks=
-`;
 }
