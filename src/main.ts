@@ -95,9 +95,9 @@ addon.on("configure", (config) =>
     .addBooleanOption((option) =>
       option
         .setName("automateWineSetup")
-        .setDisplayName("Automate Setup under Wine")
+        .setDisplayName("Automate Setup under Wine (experimental)")
         .setDescription(
-          "On Linux or macOS, run FitGirl's setup unattended via Wine with no prompts after download. Off by default: the manual setup flow asks for the install folder and runs the setup GUI.",
+          "Experimental. On Linux or macOS, run FitGirl's setup unattended via Wine with no prompts after download. FitGirl installers are not known to complete unattended: setup can hang on a prompt that /SUPPRESSMSGBOXES cannot dismiss (a blank window with music playing). The manual setup flow, which asks for the install folder and runs the setup GUI, is recommended. Off by default.",
         )
         .setDefaultValue(AUTOMATE_WINE_SETUP_DEFAULT),
     )
