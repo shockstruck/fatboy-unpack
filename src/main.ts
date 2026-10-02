@@ -34,6 +34,7 @@ import {
   makeSetupINF,
   toWineZPath,
 } from "./wine-setup";
+import { resolveUmuBin } from "./umu-path";
 import {
   candidateAbsolutePath,
   resolveExecutableChoice,
@@ -41,15 +42,7 @@ import {
   scoreCandidates,
 } from "./executable-detection";
 
-const UMU_BIN = join(
-  process.env.HOME! ?? "",
-  ".local",
-  "share",
-  "OpenGameInstaller",
-  "bin",
-  "umu",
-  "umu-run",
-);
+const UMU_BIN = resolveUmuBin(process.env);
 // Cookie string is now managed in scraper.ts
 const addon = new OGIAddon({
   author: "Fat-Addons",
