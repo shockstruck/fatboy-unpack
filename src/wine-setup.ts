@@ -63,6 +63,12 @@ export function describeInnoExitCode(code: number): string {
   return `Inno Setup exited with an unrecognized code ${code}.`;
 }
 
+/**
+ * Default for the "Automate Setup under Wine" option. Off: the manual flow
+ * asks for the install folder and runs the setup GUI, unless the user opts in.
+ */
+export const AUTOMATE_WINE_SETUP_DEFAULT = false;
+
 export type SetupBranch = "silent" | "manual" | "win32";
 
 /**

@@ -27,6 +27,7 @@ import {
 import { findBestGameMatch, Game } from "./string-similarity";
 import { fileURLToPath } from "url";
 import {
+  AUTOMATE_WINE_SETUP_DEFAULT,
   buildSilentSetupArgs,
   decideSetupBranch,
   describeInnoExitCode,
@@ -103,9 +104,9 @@ addon.on("configure", (config) =>
         .setName("automateWineSetup")
         .setDisplayName("Automate Setup under Wine")
         .setDescription(
-          "On Linux or macOS, run FitGirl's setup unattended via Wine with no prompts after download. Disable to use the manual setup flow instead.",
+          "On Linux or macOS, run FitGirl's setup unattended via Wine with no prompts after download. Off by default: the manual setup flow asks for the install folder and runs the setup GUI.",
         )
-        .setDefaultValue(true),
+        .setDefaultValue(AUTOMATE_WINE_SETUP_DEFAULT),
     )
     .addActionOption((option) =>
       option

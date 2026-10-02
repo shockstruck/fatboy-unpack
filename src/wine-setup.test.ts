@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  AUTOMATE_WINE_SETUP_DEFAULT,
   buildSilentSetupArgs,
   decideSetupBranch,
   describeInnoExitCode,
@@ -113,5 +114,14 @@ describe("makeSetupINF", () => {
   it("adds the bonus component when requested", () => {
     const inf = makeSetupINF("Z:\\home\\user\\Games", true);
     expect(inf).toContain("Components=text,bonus");
+  });
+});
+
+describe("AUTOMATE_WINE_SETUP_DEFAULT", () => {
+  it("is off, so Linux uses the manual flow by default", () => {
+    expect(AUTOMATE_WINE_SETUP_DEFAULT).toBe(false);
+    expect(decideSetupBranch("linux", AUTOMATE_WINE_SETUP_DEFAULT)).toBe(
+      "manual",
+    );
   });
 });
