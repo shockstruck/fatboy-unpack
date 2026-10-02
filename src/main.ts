@@ -35,6 +35,7 @@ import {
   toWineZPath,
 } from "./wine-setup";
 import { resolveUmuBin } from "./umu-path";
+import { installationExistsPrompt } from "./installation-exists-prompt";
 import {
   candidateAbsolutePath,
   resolveExecutableChoice,
@@ -674,19 +675,7 @@ addon.on(
         const result = await event.askForInput(
           "Installation Exists",
           "An installation has already been attempted in this folder. Do you want to retry the extraction or continue with the existing files?",
-          new ConfigurationBuilder()
-            .addActionOption((option) =>
-              option
-                .setButtonText("Retry")
-                .setName("retry")
-                .setDescription("Do you want to retry the download?"),
-            )
-            .addActionOption((option) =>
-              option
-                .setButtonText("Continue")
-                .setName("continue")
-                .setDescription("Do you want to cancel the download?"),
-            ),
+          installationExistsPrompt(),
         );
         continueFlag = result?.continue;
       } else if (
