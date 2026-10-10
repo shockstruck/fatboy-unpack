@@ -35,6 +35,7 @@ import {
   toWineZPath,
 } from "./wine-setup";
 import { resolveUmuBin } from "./umu-path";
+import { selectExtractionParts } from "./rar-volume";
 import { installationExistsPrompt } from "./installation-exists-prompt";
 import {
   candidateAbsolutePath,
@@ -687,8 +688,12 @@ addon.on(
           "Unraring downloaded contents... This may take a while depending on the size of the files, amount of files, and speed of your computer. Please be patient.",
         );
         try {
-          // FuckingFast uses synthetic partN.rar names for independent archives.
-          const extractionJobs: ExtractionJob[] = multiPartFiles.map(
+          // A multi-volume set is extracted once, from its first volume.
+          const archives = selectExtractionParts(path, multiPartFiles);
+          event.log(
+            `Extracting ${archives.length} archive(s) from ${multiPartFiles.length} part(s)`,
+          );
+          const extractionJobs: ExtractionJob[] = archives.map(
             (part) => {
               const filePath = join(path, part.name);
               const size = Math.max(fs.statSync(filePath).size, 1);
@@ -711,7 +716,7 @@ addon.on(
           await extractAllWithProgress(extractionJobs, (progress) => {
             event.progress = progress;
           });
-          event.log(`Unrar completed for ${multiPartFiles.length} archive(s)`);
+          event.log(`Unrar completed for ${archives.length} archive(s)`);
         } catch (error) {
           event.fail(`Failed to extract downloaded files: ${String(error)}`);
           resolve();
